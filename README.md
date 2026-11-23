@@ -142,7 +142,7 @@ MIT.
 Every version is attached to a release here as a package file. This works whether or not the package is on npm:
 
 ```
-npm install -g https://github.com/agentvms/files-direct-cli/releases/download/v0.1.0/files-direct-0.1.0.tgz
+npm install -g https://github.com/agentvms/files-direct-cli/releases/download/v0.1.1/files-direct-0.1.1.tgz
 ```
 
 ## The plugin
