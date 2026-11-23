@@ -69,12 +69,21 @@ export interface Result {
 
 export type RunState = 'opening' | 'waiting' | 'knocking' | 'connecting' | 'offered' | 'transferring' | 'finished' | 'failed' | 'cancelled';
 
+/** What the window adds: someone is at the keyboard, so a typed code can be answered by asking them. */
+export interface KnockOptions {
+  password?: string;
+  allowCode?: boolean;
+  /** Asked when someone types the code. Resolves yes to let them in. Used only when `allowCode` is off. The signal fires when that visitor has gone, or another one has knocked: the question is dead then and its answer is never sent. */
+  letIn?: (gone: AbortSignal) => Promise<boolean>;
+}
+
 export interface SendOptions {
   files: Picked[];
   skipped?: Skipped[];
   password?: string;
   /** Let a code join in without anyone at the keyboard. Off by default: a nine-digit code can be guessed, so a stranger's knock is refused. */
   allowCode?: boolean;
+  letIn?: KnockOptions['letIn'];
   /** Give up when nobody has joined after this long. 0: never. */
   waitMs?: number;
 }
@@ -90,6 +99,7 @@ export interface AskOptions {
   maxFiles?: number;
   password?: string;
   allowCode?: boolean;
+  letIn?: KnockOptions['letIn'];
   /** Give up when no files have started to arrive after this long. 0: never. A transfer already under way is not cut short. */
   waitMs?: number;
   guard?: Guard;
@@ -154,6 +164,8 @@ export class Run {
   private asking: string | null = null;
   private guard: Guard | undefined;
   private joinedOnce = false;
+  /** The question about the visitor who knocked last, while it is open. */
+  private knockGone: AbortController | null = null;
   private sendRecord!: (r: ReturnType<typeof roomRecord>) => void;
 
   constructor(private readonly env: RoomEnv, role: 'sender' | 'receiver', private readonly onEvent?: (e: ProgramEvent) => void) {
@@ -227,6 +239,7 @@ export class Run {
   private finish(outcome: Outcome, ctx: { wait?: number } = {}): void {
     if (this.ended) return;
     this.ended = true;
+    this.knockGone?.abort();
     const ok = outcome === 'finished';
     const message = reasonText(outcome, { wait: ctx.wait, install: this.env.install });
     const result: Result = { outcome, message, files: this.batch?.files ?? this.fileCount, bytes: this.batch?.bytes ?? 0, route: this.route, saved: this.saved, ...(ctx.wait === undefined ? {} : { wait: ctx.wait }) };
@@ -384,7 +397,7 @@ export class Run {
     return true;
   }
 
-  private onSenderMessage(m: Message, o: Pick<SendOptions, 'password' | 'allowCode'>): void {
+  private onSenderMessage(m: Message, o: KnockOptions): void {
     if (m.t === 'code' && typeof m.code === 'string') {
       this.code = m.code;
       this.st.ref = cleanRef(m.ref);
@@ -394,9 +407,25 @@ export class Run {
       this.resolveOpened();
       this.keepRecord();
     } else if (m.t === 'knock') {
+      if (o.letIn && !o.allowCode) {
+        // somebody is at the window: they are asked who may in
+        this.knockGone?.abort(); // a new knock means the one before has gone
+        const ask = (this.knockGone = new AbortController());
+        const answer = (yes: boolean) => {
+          if (this.ended || ask.signal.aborted) return; // an answer to a visitor who has left must not reach the next one
+          this.knockGone = null;
+          this.signal.send({ t: yes ? 'allow' : 'decline' });
+          this.note({ event: 'knock', allowed: yes });
+        };
+        o.letIn(ask.signal).then(answer, () => answer(false));
+        return;
+      }
       // a typed code can be guessed: nobody is here to look at who it is, so by default the knock is refused
       this.signal.send({ t: o.allowCode ? 'allow' : 'decline' });
       this.note({ event: 'knock', allowed: Boolean(o.allowCode) });
+    } else if (m.t === 'knock-gone') {
+      this.knockGone?.abort();
+      this.knockGone = null;
     } else if (m.t === 'route') this.onRoute(m);
     else if (m.t === 'device') this.takeDevice(m.d);
     else if (m.t === 'ready') {

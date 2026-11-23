@@ -5,6 +5,21 @@ export const PUBLIC_REPO_URL = 'https://github.com/agentvms/files-direct-cli';
 /** Where a version's package file is attached to its release in the public repository (the release workflow names it so). */
 export const publicReleaseTarball = (version: string): string => `${PUBLIC_REPO_URL}/releases/download/v${version}/files-direct-${version}.tgz`;
 
+/**
+ * The public half of the key that signs the double-click app's list of updates (files-direct-34): the raw 32 bytes of an Ed25519 key, in base64.
+ * Made by the Factory lead; the secret half is only ever a secret (FD_UPDATE_SIGNING_KEY) of the public repository's release workflow. With an empty key a copy of the app never updates itself.
+ */
+export const UPDATE_PUBLIC_KEY = 'DWKN0R/GF/YjYe5KKyJkwfD7qJTk6NG0QCaM1ILp/2g=';
+/**
+ * Where the app's files are attached to a release in the public repository: the Worker streams them from here under /desktop/ and keeps nothing.
+ * A file with a version in its name comes from that version's own release, so a download page or a list that is a few minutes old still finds it after the next
+ * release is out; only the list of updates (feed.json and its signature) is the latest release's.
+ */
+export const publicReleaseAsset = (name: string): string => {
+  const version = /^files-direct(?:-setup)?-(\d{1,4}\.\d{1,4}\.\d{1,4})-/.exec(name)?.[1];
+  return version ? `${PUBLIC_REPO_URL}/releases/download/v${version}/${name}` : `${PUBLIC_REPO_URL}/releases/latest/download/${name}`;
+};
+
 /** Cloudflare's public addresses for finding a direct route (3478 and 443 for networks that block 3478). */
 export const ICE_URLS = ['stun:stun.cloudflare.com:3478', 'stun:stun.cloudflare.com:443'];
 
@@ -62,6 +77,33 @@ export const BLOCK_SIZE = 4 * 1024 * 1024;
 
 /** A block crosses the channel as pieces of at most this many bytes (safe on every browser's data channel). */
 export const PIECE_SIZE = 64 * 1024;
+
+/**
+ * Small previews of photos (files-direct-32, docs/PROTOCOL.md "Previews"). The receiver says it takes them; the sender makes them on its own device and sends them over the same
+ * connection, one frame each, before the answer. How many, how big across and how many bytes each is depends on the route: through our servers they stay tiny, because they count against the meter.
+ */
+export interface PreviewLimits {
+  /** Most previews of one batch. */
+  count: number;
+  /** Longest side of a preview, in pixels. */
+  edge: number;
+  /** Most bytes of one preview (the picture itself, before base64). */
+  bytes: number;
+}
+export const PREVIEW_LIMITS: { direct: PreviewLimits; relay: PreviewLimits } = {
+  direct: { count: 30, edge: 480, bytes: 40 * 1024 },
+  relay: { count: 12, edge: 240, bytes: 12 * 1024 },
+};
+export const previewLimits = (relay: boolean): PreviewLimits => (relay ? PREVIEW_LIMITS.relay : PREVIEW_LIMITS.direct);
+/** The kinds of file a sender may try to make a preview of (never SVG). A file that cannot be decoded here (HEIC in Chrome, say) simply has none. */
+export const PREVIEW_SOURCE_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/avif', 'image/heic', 'image/heif'];
+/** A file bigger than this is not decoded for a preview. */
+export const PREVIEW_SOURCE_MAX_BYTES = 50 * 1000 * 1000;
+/** The kinds of picture a preview frame may hold. */
+export const PREVIEW_TYPES = ['image/jpeg', 'image/webp'];
+/** The sender gives up on one picture after this long, and on all of a batch's previews after the longer one. Previews never hold anything else up. */
+export const PREVIEW_ONE_MS = 4000;
+export const PREVIEW_TOTAL_MS = 20_000;
 
 /** The largest block size a receiver accepts from the other side. */
 export const MAX_BLOCK_SIZE = 16 * 1024 * 1024;
