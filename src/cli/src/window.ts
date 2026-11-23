@@ -63,6 +63,8 @@ export class Desk {
   private run: Run | null = null;
   private result: Result | null = null;
   private closing = false;
+  /** A job is being set up (its folder made) and has not begun yet: no second one may start meanwhile. */
+  private starting = false;
   private s: Snapshot;
   private answer: ((yes: boolean) => void) | null = null;
   private accepted = false;
@@ -103,16 +105,14 @@ export class Desk {
       case 'turn-away':
         this.answer?.(b.do === 'allow');
         return { ok: true };
-      case 'ask':
-        if (this.run) return { ok: false, error: 'Something is already open in this window.' };
-        await this.startAsk(typeof b.note === 'string' ? b.note : '');
-        return { ok: true };
+      case 'ask': {
+        const note = typeof b.note === 'string' ? b.note : '';
+        return this.startJob(() => this.startAsk(note));
+      }
       case 'receive': {
-        if (this.run) return { ok: false, error: 'Something is already open in this window.' };
         const door = typeof b.target === 'string' ? doorOf(b.target.trim(), this.o.env.origin) : null;
         if (!door) return { ok: false, error: 'That is not a link from this site or a nine-digit code.' };
-        await this.startReceive(door);
-        return { ok: true };
+        return this.startJob(() => this.startReceive(door));
       }
       default:
         return { ok: false, error: 'That is not something this window does.' };
@@ -143,15 +143,21 @@ export class Desk {
 
   // ---- the three jobs ---------------------------------------------------------------------------------
 
-  private letIn = (): Promise<boolean> =>
+  /** The question "let this person in?". It ends when it is answered, when it times out, or when the visitor it was about has gone: it never touches a newer question. */
+  private letIn = (gone: AbortSignal): Promise<boolean> =>
     new Promise((resolve) => {
-      const timer = setTimeout(() => done(false), this.o.knockMs ?? 60_000);
       const done = (yes: boolean) => {
         clearTimeout(timer);
-        this.answer = null;
-        this.s.knock = false;
+        gone.removeEventListener('abort', onGone);
+        if (this.answer === done) {
+          this.answer = null;
+          this.s.knock = false;
+        }
         resolve(yes);
       };
+      const onGone = () => done(false);
+      const timer = setTimeout(() => done(false), this.o.knockMs ?? 60_000);
+      gone.addEventListener('abort', onGone, { once: true });
       this.answer = done;
       this.s.knock = true;
     });
@@ -164,15 +170,32 @@ export class Desk {
     this.begin(send(this.o.env, { files: list, skipped, letIn: this.letIn, waitMs: this.o.waitMs ?? 30 * 60_000 }, (e) => this.onEvent(e)), 'send');
   }
 
-  private async startAsk(note: string): Promise<void> {
+  /**
+   * One job at a time. The place is taken before anything is awaited, so a double click or two tabs cannot start two engines; it is given up if the
+   * folder cannot be made, and a window closed while the folder is being made starts nothing.
+   */
+  private async startJob(begin: () => void): Promise<{ ok: boolean; error?: string }> {
+    if (this.starting || this.run || this.closing) return { ok: false, error: 'Something is already open in this window.' };
+    this.starting = true;
+    try {
+      await mkdir(this.o.downloads, { recursive: true });
+      if (this.closing) return { ok: false, error: 'The window was closed.' };
+      begin();
+      return { ok: true };
+    } catch {
+      return { ok: false, error: 'The folder for saved files could not be made.' };
+    } finally {
+      this.starting = false;
+    }
+  }
+
+  private startAsk(note: string): void {
     const asked = cleanNote(note);
-    await mkdir(this.o.downloads, { recursive: true });
     this.s = { ...this.fresh('connecting'), job: 'ask', title: 'Asking for files', sub: (asked ? `"${asked}". ` : '') + 'The files come straight to ' + this.o.downloads + '. Nothing is replaced.', status: 'Opening a room…' };
     this.begin(ask(this.o.env, { note: asked, dest: this.o.downloads, maxFiles: 1000, letIn: this.letIn, waitMs: this.o.waitMs ?? 30 * 60_000 }, (e) => this.onEvent(e)), 'ask');
   }
 
-  private async startReceive(door: NonNullable<ReturnType<typeof doorOf>>): Promise<void> {
-    await mkdir(this.o.downloads, { recursive: true });
+  private startReceive(door: NonNullable<ReturnType<typeof doorOf>>): void {
     this.s = { ...this.fresh('connecting'), job: 'receive', title: 'Receiving files', sub: 'They are saved straight to ' + this.o.downloads + ' and checked. Nothing is replaced.', status: 'Connecting…' };
     this.begin(receive(this.o.env, { target: door, dest: this.o.downloads }, (e) => this.onEvent(e)), 'receive');
   }

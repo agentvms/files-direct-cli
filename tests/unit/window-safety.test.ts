@@ -190,6 +190,40 @@ describe('what the page can and cannot ask for', () => {
   });
 });
 
+describe('one job at a time', () => {
+  it('two presses at once start one engine: the second is told something is open, and Close cancels the one that runs', async () => {
+    const { desk, downloads } = await up();
+    const both = await Promise.all([desk.act({ do: 'ask', note: 'first' }), desk.act({ do: 'ask', note: 'second' })]);
+    expect(both.filter((r) => r.ok)).toHaveLength(1);
+    expect(both.find((r) => !r.ok)!.error).toBe('Something is already open in this window.');
+    expect(desk.snapshot()).toMatchObject({ job: 'ask', where: downloads });
+    expect(desk.snapshot().sub).toContain('first');
+    // a receive while an ask is open is refused too
+    const code = await desk.act({ do: 'receive', target: '123456789' });
+    expect(code).toEqual({ ok: false, error: 'Something is already open in this window.' });
+    await desk.act({ do: 'close' });
+    await desk.ended;
+  });
+
+  it('an ask and a receive at once start one engine', async () => {
+    const { desk } = await up();
+    const both = await Promise.all([desk.act({ do: 'receive', target: '123456789' }), desk.act({ do: 'ask', note: 'x' })]);
+    expect(both.filter((r) => r.ok)).toHaveLength(1);
+    await desk.act({ do: 'close' });
+    await desk.ended;
+  });
+
+  it('Close while the folder is still being made starts nothing', async () => {
+    const { desk } = await up();
+    const pending = desk.act({ do: 'ask', note: 'late' });
+    await desk.act({ do: 'close' });
+    expect(await pending).toEqual({ ok: false, error: 'The window was closed.' });
+    expect(await desk.ended).toBe(0);
+    expect(desk.snapshot()).toMatchObject({ phase: 'home', job: null });
+    expect(await desk.act({ do: 'ask', note: 'after' })).toEqual({ ok: false, error: 'Something is already open in this window.' });
+  });
+});
+
 describe('when the window goes away', () => {
   it('a page that stops answering counts as a closed window: the program ends and nothing keeps running', async () => {
     const desk = new Desk({ env, downloads: join(root, 'idle') });
