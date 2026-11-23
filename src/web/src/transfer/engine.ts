@@ -3,11 +3,12 @@
  * and is tested in node with a stand-in channel. A Session is one data channel; every frame names its batch, so a
  * batch each way can run at once.
  */
-import { BLOCK_SIZE, HIGH_WATER, LOW_WATER, MAX_BLOCK_SIZE, MAX_BLOCK_TRIES, PIECE_SIZE, WINDOW_BLOCKS } from '../../../shared/config.ts';
+import { BLOCK_SIZE, HIGH_WATER, LOW_WATER, MAX_BLOCK_SIZE, MAX_BLOCK_TRIES, PIECE_SIZE, PREVIEW_ONE_MS, PREVIEW_TOTAL_MS, WINDOW_BLOCKS, previewLimits, type PreviewLimits } from '../../../shared/config.ts';
 import { cleanNote } from '../../../shared/ask.ts';
 import { type Control, type FileInfo, DIGEST_BYTES, decodePiece, encodePiece, fingerprint, fromHex, sameBytes, sha256, toHex } from './frames.ts';
 import { Meter } from './meter.ts';
 import { cleanPaths } from './paths.ts';
+import { type PreviewImage, fromBase64, isPreviewKind, isPreviewSource, isPreviewType, looksLike, toBase64 } from './preview.ts';
 import { BlockRecord } from './record.ts';
 import type { BlockSink, SinkFactory } from './sink.ts';
 
@@ -28,6 +29,8 @@ export interface Sendable {
   name: string;
   size: number;
   type: string;
+  /** The file itself, where the browser can read it as a picture (a preview is made from it). */
+  blob?: Blob;
   slice(start: number, end: number): { arrayBuffer(): Promise<ArrayBuffer> };
 }
 
@@ -46,6 +49,8 @@ export type TransferEvent =
   | { k: 'complete'; b: number; dir: Direction }
   /** Receiver: a batch was offered and nothing moves until the person accepts or declines it. */
   | { k: 'offered'; b: number; files: number; bytes: number }
+  /** Receiver: a small picture of file `i` came with the offer, inside the limits (the page still checks that it draws). Plain data, never sent anywhere but to the screen. */
+  | { k: 'preview'; b: number; i: number; blob: Blob; w: number; h: number }
   /** The other side is asking this one for files. `note` is what the asker wrote, cleaned here like a file name ("" when there is none). Nothing is sent until the person picks files. */
   | { k: 'asked'; b: number; note: string }
   /** Sender: the other side said no thanks. Nothing was sent. */
@@ -61,6 +66,12 @@ export interface SessionOptions {
   odd: boolean;
   /** Receiver: wait for `accept(b)` or `decline(b)` before taking a batch. Off (take at once) is for engine tests. */
   ask?: boolean;
+  /** Receiver: this page can show small previews of photos, so it says so to the sender (`pv` on `asking`) and takes the ones that come. Needs `ask`. */
+  previews?: boolean;
+  /** Sender: makes the small picture of a file for a receiver that takes them, or gives null (it cannot be decoded, it is too big, ...). Runs one file at a time. */
+  makePreview?: (src: Sendable, limits: PreviewLimits) => Promise<PreviewImage | null>;
+  /** This connection goes through our servers: previews stay tiny. Can change later (setRelay). */
+  relay?: boolean;
   blockSize?: number;
   window?: number;
   now?: () => number;
@@ -100,6 +111,8 @@ interface OutBatch {
   accepted: boolean;
   /** The receiver's page said it is asking its person (a page that predates the question never says so). */
   asked: boolean;
+  /** Previews are being made for this batch (the receiver said it takes them). */
+  previewing: boolean;
 }
 
 /** A request for files this side made: it is answered when the other page says it is showing it. */
@@ -121,6 +134,8 @@ interface InFile {
   checked: boolean;
   recheck: Set<number>;
   got: number;
+  /** A preview of this file was taken. */
+  previewed: boolean;
 }
 
 interface InBatch {
@@ -135,6 +150,8 @@ interface InBatch {
   dead: boolean;
   /** This side has said yes (at once when it does not ask). Until then nothing of the batch is taken. */
   accepted: boolean;
+  /** Previews taken so far (at most the route's count). */
+  previews: number;
 }
 
 interface Assembling {
@@ -156,6 +173,9 @@ export class Session {
   private readonly emit: (e: TransferEvent) => void;
   private readonly blockSize: number;
   private readonly ask: boolean;
+  private readonly previews: boolean;
+  private readonly makePreview: SessionOptions['makePreview'];
+  private relay: boolean;
   private readonly window: number;
   private readonly now: () => number;
   private nextBatch: number;
@@ -179,6 +199,9 @@ export class Session {
     this.emit = o.emit;
     this.blockSize = o.blockSize ?? BLOCK_SIZE;
     this.ask = o.ask ?? false;
+    this.previews = (o.previews ?? false) && this.ask;
+    this.makePreview = o.makePreview;
+    this.relay = o.relay ?? false;
     this.after = o.after;
     this.window = o.window ?? WINDOW_BLOCKS;
     this.now = o.now ?? (() => Date.now());
@@ -221,6 +244,7 @@ export class Session {
       dead: false,
       accepted: false,
       asked: false,
+      previewing: false,
     };
     this.out.set(b, batch);
     const infos: FileInfo[] = files.map((f, i) => ({ i, name: f.name, size: f.size, type: f.type }));
@@ -260,6 +284,11 @@ export class Session {
         }, HELLO_MS),
       );
     return b;
+  }
+
+  /** The connection now goes through our servers (or no longer does): the limits of previews that come after follow. */
+  setRelay(on: boolean): void {
+    this.relay = on;
   }
 
   pause(b: number): void {
@@ -451,7 +480,12 @@ export class Session {
   }
 
   private async process(data: string | ArrayBuffer): Promise<void> {
-    if (typeof data === 'string') return this.processControl(JSON.parse(data) as Control);
+    if (typeof data === 'string') {
+      const msg = JSON.parse(data) as Control;
+      // a preview frame is at most a piece as a whole, whatever else it carries (padding, extra properties): a bigger one is dropped like any out-of-bounds preview
+      if (msg.t === 'preview' && new TextEncoder().encode(data).length > PIECE_SIZE) return;
+      return this.processControl(msg);
+    }
     const piece = decodePiece(data);
     const cur = this.cur;
     if (!piece) return this.violation(undefined, 'v2');
@@ -506,10 +540,14 @@ export class Session {
           return;
         }
         const batch = this.out.get(msg.b);
-        if (batch) batch.asked = true;
-        else if (!this.gone.has(msg.b)) this.violation(undefined, 'v18');
+        if (batch) {
+          batch.asked = true;
+          if (msg.pv === 1) this.startPreviews(batch);
+        } else if (!this.gone.has(msg.b)) this.violation(undefined, 'v18');
         return;
       }
+      case 'preview':
+        return this.onPreview(msg);
       case 'accept':
         return this.onAccept(msg);
       case 'decline':
@@ -564,6 +602,7 @@ export class Session {
         checked: false,
         recheck: new Set(),
         got: 0,
+        previewed: false,
       };
     });
     const batch: InBatch = {
@@ -577,13 +616,92 @@ export class Session {
       lastEmit: 0,
       dead: false,
       accepted: !this.ask,
+      previews: 0,
     };
     this.inn.set(m.b, batch);
     this.emit({ k: 'started', b: m.b, dir: 'in', files: files.map((f) => ({ i: f.info.i, name: f.info.name, size: f.info.size })), storage: this.sinks.kind });
     if (this.ask) {
-      this.control({ t: 'asking', b: m.b });
+      this.control(this.previews ? { t: 'asking', b: m.b, pv: 1 } : { t: 'asking', b: m.b });
       this.emit({ k: 'offered', b: m.b, files: files.length, bytes: batch.total });
     } else this.control({ t: 'accept', b: m.b });
+  }
+
+  /**
+   * A small picture of a photo of the offered batch. Anything out of bounds is dropped without a word: it is not a reason to stop the batch, and it never shows as an error.
+   * (A batch this side does not know, one already answered, a file that is not a photo in the manifest, a second picture of one file, more than the route's count, a kind not on the list,
+   * a picture over the route's size or byte limit, something that is not what its type says.)
+   */
+  private onPreview(m: Extract<Control, { t: 'preview' }>): void {
+    if (!this.previews) return;
+    const batch = this.inn.get(m.b);
+    if (!batch || batch.dead || batch.accepted) return;
+    const limits = previewLimits(this.relay);
+    const file = Number.isSafeInteger(m.i) ? batch.files[m.i] : undefined;
+    if (!file || file.previewed || batch.previews >= limits.count || !isPreviewKind(file.info.type)) return;
+    if (!isPreviewType(m.type) || !Number.isSafeInteger(m.w) || !Number.isSafeInteger(m.h) || m.w < 1 || m.h < 1 || m.w > limits.edge || m.h > limits.edge) return;
+    if (typeof m.data !== 'string' || m.data.length > PIECE_SIZE) return;
+    const bytes = fromBase64(m.data);
+    if (!bytes || bytes.length === 0 || bytes.length > limits.bytes || !looksLike(m.type, bytes)) return;
+    file.previewed = true;
+    batch.previews++;
+    this.emit({ k: 'preview', b: m.b, i: m.i, blob: new Blob([bytes as BlobPart], { type: m.type }), w: m.w, h: m.h });
+  }
+
+  /**
+   * The receiver takes previews: make them, one file at a time, and send each as it is ready. It runs beside everything else and nothing waits on it; it stops at the answer
+   * (a preview after the yes is dropped by the other side anyway), at the cap, or when time is up (PREVIEW_TOTAL_MS; PREVIEW_ONE_MS for one picture).
+   */
+  private startPreviews(batch: OutBatch): void {
+    const make = this.makePreview;
+    if (!make || batch.previewing || batch.dead || batch.accepted) return;
+    batch.previewing = true;
+    const over = () => batch.dead || batch.accepted || this.closed;
+    const task = (async () => {
+      let timeUp = false;
+      const stop = this.after?.(() => (timeUp = true), PREVIEW_TOTAL_MS);
+      let sent = 0;
+      let tried = 0;
+      try {
+        for (const [i, f] of batch.files.entries()) {
+          const limits = previewLimits(this.relay);
+          if (over() || timeUp || sent >= limits.count || tried >= limits.count * 3) break;
+          if (f.state === 'failed' || !isPreviewSource(f.src.type, f.src.size)) continue;
+          tried++;
+          const image = await this.within(make(f.src, limits).catch(() => null), PREVIEW_ONE_MS);
+          const now = previewLimits(this.relay); // the route may have changed while the picture was made
+          if (over() || timeUp || !image || !isPreviewType(image.type) || image.bytes.length === 0 || image.bytes.length > now.bytes || image.w > now.edge || image.h > now.edge || image.w < 1 || image.h < 1) continue;
+          const frame = JSON.stringify({ t: 'preview', b: batch.b, i, type: image.type, w: image.w, h: image.h, data: toBase64(image.bytes) } satisfies Control);
+          if (frame.length > PIECE_SIZE) continue;
+          await this.drain();
+          if (over()) break;
+          if (this.ch.readyState === 'open') this.ch.send(frame);
+          sent++;
+        }
+      } catch {
+        // a preview is never worth a failure: whatever went wrong, there is simply no picture
+      } finally {
+        stop?.();
+      }
+    })().finally(() => this.tasks.delete(task));
+    this.tasks.add(task);
+  }
+
+  /** What `work` gives, or null once `ms` have passed (where this session has a timer). */
+  private within<T>(work: Promise<T | null>, ms: number): Promise<T | null> {
+    if (!this.after) return work;
+    return new Promise((resolve) => {
+      const cancel = this.after!(() => resolve(null), ms);
+      void work.then(
+        (v) => {
+          cancel();
+          resolve(v);
+        },
+        () => {
+          cancel();
+          resolve(null);
+        },
+      );
+    });
   }
 
   private onAccept(m: Extract<Control, { t: 'accept' }>): void {

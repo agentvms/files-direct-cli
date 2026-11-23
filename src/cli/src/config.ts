@@ -1,5 +1,5 @@
 import { ICE_URLS } from '../../shared/config.ts';
-import { type Device, type SYSTEMS, programDevice } from '../../shared/device.ts';
+import { type Device, type SYSTEMS, desktopDevice, programDevice } from '../../shared/device.ts';
 import type { RouteConfig } from '../../shared/route.ts';
 import type { RoomEnv } from './room.ts';
 
@@ -34,6 +34,9 @@ export function systemOf(platform: string = process.platform): Device['system'] 
 
 export const deviceOfThisProgram = (): Device => programDevice(systemOf(), Number.parseInt(VERSION, 10) || 0);
 
+/** The Files Direct window (the program started with `open`, from a right-click or on its own): its own fixed word, so the other side and the records can tell it from a terminal. */
+export const deviceOfTheWindow = (): Device => desktopDevice(systemOf(), Number.parseInt(VERSION, 10) || 0);
+
 /**
  * What the page gets in its `fd-config` block: the addresses for finding a direct route and the route settings. A program reads the same block
  * from the home page, so it follows whatever the site says (and the tests' own settings). Without it: the built-in defaults.
@@ -53,7 +56,7 @@ export async function siteSettings(origin: string, headers?: Record<string, stri
   return { ice: ICE_URLS, route: { switch: true } };
 }
 
-export async function roomEnv(origin: string, headers?: Record<string, string>): Promise<RoomEnv> {
+export async function roomEnv(origin: string, headers?: Record<string, string>, window = false): Promise<RoomEnv> {
   const s = await siteSettings(origin, headers);
-  return { origin, headers, ice: s.ice, route: s.route, device: deviceOfThisProgram(), install: installLine(origin) };
+  return { origin, headers, ice: s.ice, route: s.route, device: window ? deviceOfTheWindow() : deviceOfThisProgram(), install: installLine(origin) };
 }

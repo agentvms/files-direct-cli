@@ -63,6 +63,33 @@ export const BLOCK_SIZE = 4 * 1024 * 1024;
 /** A block crosses the channel as pieces of at most this many bytes (safe on every browser's data channel). */
 export const PIECE_SIZE = 64 * 1024;
 
+/**
+ * Small previews of photos (files-direct-32, docs/PROTOCOL.md "Previews"). The receiver says it takes them; the sender makes them on its own device and sends them over the same
+ * connection, one frame each, before the answer. How many, how big across and how many bytes each is depends on the route: through our servers they stay tiny, because they count against the meter.
+ */
+export interface PreviewLimits {
+  /** Most previews of one batch. */
+  count: number;
+  /** Longest side of a preview, in pixels. */
+  edge: number;
+  /** Most bytes of one preview (the picture itself, before base64). */
+  bytes: number;
+}
+export const PREVIEW_LIMITS: { direct: PreviewLimits; relay: PreviewLimits } = {
+  direct: { count: 30, edge: 480, bytes: 40 * 1024 },
+  relay: { count: 12, edge: 240, bytes: 12 * 1024 },
+};
+export const previewLimits = (relay: boolean): PreviewLimits => (relay ? PREVIEW_LIMITS.relay : PREVIEW_LIMITS.direct);
+/** The kinds of file a sender may try to make a preview of (never SVG). A file that cannot be decoded here (HEIC in Chrome, say) simply has none. */
+export const PREVIEW_SOURCE_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/avif', 'image/heic', 'image/heif'];
+/** A file bigger than this is not decoded for a preview. */
+export const PREVIEW_SOURCE_MAX_BYTES = 50 * 1000 * 1000;
+/** The kinds of picture a preview frame may hold. */
+export const PREVIEW_TYPES = ['image/jpeg', 'image/webp'];
+/** The sender gives up on one picture after this long, and on all of a batch's previews after the longer one. Previews never hold anything else up. */
+export const PREVIEW_ONE_MS = 4000;
+export const PREVIEW_TOTAL_MS = 20_000;
+
 /** The largest block size a receiver accepts from the other side. */
 export const MAX_BLOCK_SIZE = 16 * 1024 * 1024;
 

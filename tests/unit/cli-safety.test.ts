@@ -55,26 +55,35 @@ describe('a hostile sender cannot write outside the destination', () => {
   const NAMES = ['../../escape.txt', '/tmp/escape-abs.txt', 'C:\\Windows\\escape.txt', 'a/../../escape2.txt', 'x\u0000y/../../escape3', '..\\..\\escape4.txt', 'ctl\u0007\u001b[31m.txt', './././dot.txt', '....//....//e5'];
 
   it('saves every one of them inside the destination or refuses it, and writes nothing next to it', async () => {
-    const root = tmp();
-    const dest = join(root, 'inbox');
-    mkdirSync(dest);
-    const before = new Set(readdirSync(tmpdir()));
-    const bytes = pattern(BS * 2 + 3, 5);
-    const { saver, saved } = await run(dest, NAMES.map((name) => ({ name, bytes })));
-    await saver.close();
-    expect(saved).toHaveLength(NAMES.length);
-    for (const s of saved) {
-      if (s.path) {
-        expect(resolve(s.path).startsWith(resolve(dest) + '/')).toBe(true);
-        expect(readFileSync(s.path)).toEqual(Buffer.from(bytes));
+    // The temp directory is this test's own while it runs, so folders that other test files make at the same time cannot show up in what is looked at.
+    const shared = process.env.TMPDIR;
+    const mine = realpathSync(mkdtempSync(join(tmpdir(), 'fd-cli-private-')));
+    process.env.TMPDIR = mine;
+    try {
+      const root = tmp();
+      const dest = join(root, 'inbox');
+      mkdirSync(dest);
+      const before = new Set(readdirSync(tmpdir()));
+      const bytes = pattern(BS * 2 + 3, 5);
+      const { saver, saved } = await run(dest, NAMES.map((name) => ({ name, bytes })));
+      await saver.close();
+      expect(saved).toHaveLength(NAMES.length);
+      for (const s of saved) {
+        if (s.path) {
+          expect(resolve(s.path).startsWith(resolve(dest) + '/')).toBe(true);
+          expect(readFileSync(s.path)).toEqual(Buffer.from(bytes));
+        }
       }
+      // nothing outside: no file next to the destination, nothing new in the temp directory's top, no partial left behind
+      expect(readdirSync(root)).toEqual(['inbox']);
+      expect(readdirSync(tmpdir()).filter((n) => !before.has(n))).toEqual([]);
+      expect(existsSync('/tmp/escape-abs.txt')).toBe(false);
+      expect(readdirSync(dest).filter((n) => n.startsWith('.files-direct-'))).toEqual([]);
+      expect(walk(dest).length).toBe(NAMES.length);
+    } finally {
+      if (shared === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = shared;
     }
-    // nothing outside: no file next to the destination, none in the temp directory's top, no partial left behind
-    expect(readdirSync(root)).toEqual(['inbox']);
-    expect(readdirSync(tmpdir()).filter((n) => !before.has(n) && !n.startsWith('fd-cli-'))).toEqual([]);
-    expect(existsSync('/tmp/escape-abs.txt')).toBe(false);
-    expect(readdirSync(dest).filter((n) => n.startsWith('.files-direct-'))).toEqual([]);
-    expect(walk(dest).length).toBe(NAMES.length);
   });
 
   it('refuses a folder inside the destination that is a link to somewhere else, and writes nothing through it', async () => {

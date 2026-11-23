@@ -1,0 +1,43 @@
+# Written by the export step of the private source repository; do not edit here.
+# The Files Direct app for a Mac and for Windows (files-direct-34), built on GitHub's own machines of each system. The first job measures what a download
+# would weigh (the size spike); the jobs after it install the app for the runner's user only, with no administrator, and check it.
+# The Windows images are Windows Server (2022 is built like Windows 10 and 11 desktops, 2025 like the newest one); they are the closest hosted stand-in for a desktop, not one.
+name: desktop-app
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  size:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: mac-arm64
+          - os: macos-15-intel
+            target: mac-x64
+          - os: windows-2022
+            target: win-x64
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22.14.0'
+          cache: npm
+      - run: npm ci
+      - name: Measure the bare app (the program's engine, Node and the native file) in every way it could be packed
+        run: node scripts/app-build.mjs ${{ matrix.target }} size
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: app-sizes-${{ matrix.target }}
+          path: app-sizes-*.json
+          if-no-files-found: ignore

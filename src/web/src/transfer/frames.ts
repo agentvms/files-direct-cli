@@ -40,8 +40,16 @@ export type Control =
   | { t: 'failed'; b: number; i: number; /** "storage": the receiving device could not keep the data (no room left). */ why?: 'storage' }
   /** From the receiver: every file in the batch is checked and complete. */
   | { t: 'ok'; b: number }
-  /** From the receiver: the manifest is read and the person is being asked. Tells the sender this page waits for a yes. */
-  | { t: 'asking'; b: number }
+  /**
+   * From the receiver: the manifest is read and the person is being asked. Tells the sender this page waits for a yes.
+   * `pv: 1` (files-direct-32): this page can show small previews of photos, so the sender may send them now. A page that predates it never says so and never gets one.
+   */
+  | { t: 'asking'; b: number; pv?: 1 }
+  /**
+   * From the sender, after the manifest and before the answer, only to a receiver that said `pv`: a small picture of file `i` (a photo), one frame each, the whole frame at most PIECE_SIZE.
+   * `data` is the picture, base64. The receiver drops anything out of bounds without a word (docs/PROTOCOL.md, "Previews").
+   */
+  | { t: 'preview'; b: number; i: number; type: string; w: number; h: number; data: string }
   /** From the receiver: yes, send this batch. Nothing is sent before it. */
   | { t: 'accept'; b: number }
   /** From the receiver: no thanks. Nothing was sent. */
