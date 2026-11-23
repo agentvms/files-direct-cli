@@ -135,17 +135,19 @@ const noPwned = (...dirs) => dirs.every((d) => !readdirSync(d).some((n) => n.sta
 // ---- listings: the places an app could leave something ---------------------------------------------------------------------------
 
 const names = (d) => (existsSync(d) ? readdirSync(d).sort() : []);
+// a runner's shared folders (Caches, Preferences and the like) change by themselves while a check runs: for those, the entries that carry our name are listed
+const ours = (d) => names(d).filter((n) => /files.?direct|tnyforge/i.test(n));
 const listing = () => {
   const h = homedir();
   if (MAC) {
     return {
       'Library/Services': names(join(h, 'Library/Services')),
       'Library/LaunchAgents': names(join(h, 'Library/LaunchAgents')),
-      'Library/Application Support': names(join(h, 'Library/Application Support')),
-      'Library/Preferences': names(join(h, 'Library/Preferences')).filter((n) => !/^\.GlobalPreferences|ByHost/.test(n)),
-      'Library/Caches': names(join(h, 'Library/Caches')),
-      'Library/Saved Application State': names(join(h, 'Library/Saved Application State')),
-      'Library/HTTPStorages': names(join(h, 'Library/HTTPStorages')),
+      'Library/Application Support (our names)': ours(join(h, 'Library/Application Support')),
+      'Library/Preferences (our names)': ours(join(h, 'Library/Preferences')),
+      'Library/Caches (our names)': ours(join(h, 'Library/Caches')),
+      'Library/Saved Application State (our names)': ours(join(h, 'Library/Saved Application State')),
+      'Library/HTTPStorages (our names)': ours(join(h, 'Library/HTTPStorages')),
       Applications: names(join(h, 'Applications')),
       processes: run('pgrep', ['-lx', 'FilesDirect']).stdout.trim() ? ['FilesDirect is running'] : [],
     };
