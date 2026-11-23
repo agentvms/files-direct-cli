@@ -19,6 +19,8 @@ export const MAC_WORKFLOW = MENU_TEXT + '.workflow';
 export const WIN_VERB = 'FilesDirect';
 export const WIN_SENDTO = 'Files Direct.lnk';
 /** The two registry keys the entry is made of (each with a "command" key below it), and nothing else. */
+/** The folders the entry's keys sit in, innermost first. They are made by the install when they were not there; they go again when nothing else is in them. */
+export const WIN_PARENTS = ['HKCU\\Software\\Classes\\*\\shell', 'HKCU\\Software\\Classes\\*', 'HKCU\\Software\\Classes\\Directory\\shell', 'HKCU\\Software\\Classes\\Directory'] as const;
 export const WIN_KEYS = [`HKCU\\Software\\Classes\\*\\shell\\${WIN_VERB}`, `HKCU\\Software\\Classes\\Directory\\shell\\${WIN_VERB}`] as const;
 
 /** One word in single quotes for a POSIX shell: a single quote inside it is closed, escaped and opened again. */
@@ -298,6 +300,8 @@ export interface MenuEffects {
   regImport(text: string): Promise<void>;
   /** Deletes the key and everything below it; nothing happens when it is not there. */
   regDelete(key: string): Promise<void>;
+  /** Deletes the key only when it holds nothing at all (no subkey, no value); nothing happens otherwise or when it is not there. */
+  regPruneEmpty(key: string): Promise<void>;
   regExists(key: string): Promise<boolean>;
   shortcut(path: string, args: string): Promise<void>;
   /** Tells the system that the list of Services changed. May do nothing. */
@@ -351,6 +355,7 @@ export async function removeMenu(fx: MenuEffects): Promise<string[]> {
       gone.push(`Removed ${key}.`);
     }
   }
+  for (const parent of WIN_PARENTS) await fx.regPruneEmpty(parent);
   const lnk = sendToPath(fx);
   if (await fx.exists(lnk)) {
     await fx.removePath(lnk);

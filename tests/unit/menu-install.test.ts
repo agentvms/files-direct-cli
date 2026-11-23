@@ -28,10 +28,13 @@ function machine(platform: string) {
     async exists(p) { return [...files.keys()].some((k) => k === p || k.startsWith(p + '/')); },
     async regImport(text) {
       const re = /^\[HKEY_CURRENT_USER\\(.+)\]$/gm;
+      // the parents the entry sits in are made on the way when they were not there
+      for (const p of ['HKCU\\Software\\Classes\\*\\shell', 'HKCU\\Software\\Classes\\*', 'HKCU\\Software\\Classes\\Directory\\shell', 'HKCU\\Software\\Classes\\Directory']) if (![...keys.keys()].some((x) => x === p || x.startsWith(p + '\\'))) keys.set(p, 'made by install');
       for (const m of text.matchAll(re)) keys.set('HKCU\\' + m[1], 'ours');
     },
     async regDelete(k) { for (const x of [...keys.keys()]) if (x === k || x.startsWith(k + '\\')) keys.delete(x); },
     async regExists(k) { return [...keys.keys()].some((x) => x === k || x.startsWith(k + '\\')); },
+    async regPruneEmpty(k) { if (![...keys.keys()].some((x) => x.startsWith(k + '\\')) && keys.get(k) === 'made by install') keys.delete(k); },
     async shortcut(p, a) { files.set(p, 'shortcut ' + a); },
     async refreshServices() { refreshed++; },
   };
@@ -133,6 +136,18 @@ describe('on Windows', () => {
     const m = machine('win32');
     const before = m.snapshot();
     await expect(installMenu({ ...WIN, node: 'C:\\100%\\node.exe' }, m.fx)).rejects.toThrow(/%/);
+    expect(m.snapshot()).toBe(before);
+  });
+});
+
+describe('on Windows, on a computer with no other menu entries', () => {
+  it('takes out the folders of keys it had to make, too: the registry is as it was', async () => {
+    const m = machine('win32');
+    for (const k of [...m.keys.keys()]) m.keys.delete(k);
+    const before = m.snapshot();
+    await installMenu(WIN, m.fx);
+    expect([...m.keys.keys()]).toContain('HKCU\\Software\\Classes\\Directory\\shell');
+    await removeMenu(m.fx);
     expect(m.snapshot()).toBe(before);
   });
 });

@@ -121,7 +121,7 @@ async function entry() {
         const r = spawn(line.slice(0, i), [line.slice(i + 1)], { windowsVerbatimArguments: true, cwd, stdio: 'ignore' });
         r.on('error', () => {});
         const got = JSON.parse((await waitFor(out)) ?? 'null');
-        ok(Array.isArray(got) && got.at(-1) === file && got.at(-2) === '--' && got.length === 5, 'registry entry: ' + JSON.stringify(file.slice(file.lastIndexOf('\\') + 1)) + ' reached the program as one argument');
+        ok(Array.isArray(got) && got.at(-1) === file && got.at(-2) === '--' && got.length === 4, 'registry entry: ' + JSON.stringify(file.slice(file.lastIndexOf('\\') + 1)) + ' reached the program as one argument');
       }
       // Send to: Explorer adds each chosen file as its own quoted argument
       const link = lnk(SENDTO);

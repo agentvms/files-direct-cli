@@ -48,6 +48,12 @@ export function nodeEffects(env: Record<string, string | undefined> = process.en
       const r = await run(REG, ['delete', regKey(key), '/f']);
       if (r.code !== 0 && (await this.regExists(key))) throw new Error('Windows would not remove the menu entry: ' + r.out.trim());
     },
+    async regPruneEmpty(key) {
+      const r = await run(REG, ['query', regKey(key)]);
+      if (r.code !== 0) return;
+      const lines = r.out.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+      if (lines.length <= 1) await run(REG, ['delete', regKey(key), '/f']); // only its own name came back: nothing in it
+    },
     regExists: async (key) => (await run(REG, ['query', regKey(key)])).code === 0,
     async shortcut(path, args) {
       const root = env.SystemRoot ?? env.windir ?? 'C:\\Windows';
