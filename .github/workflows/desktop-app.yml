@@ -95,7 +95,7 @@ jobs:
       - run: npm ci
       - name: Build the app, the installer and the launcher
         run: node scripts/app-build.mjs win-x64 build
-      - name: A hostile name through the launcher: the careless launcher breaks, the real one does not
+      - name: A hostile name through the launcher (the careless launcher breaks, the real one does not)
         run: node scripts/app-check.mjs win-hostile
       - name: Install with no administrator, the tray program, the entries, send two files and a folder, uninstall leaves nothing
         run: node scripts/app-check.mjs win-app
