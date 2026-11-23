@@ -4,7 +4,7 @@
  */
 import { spawn } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, stat } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import type { MenuEffects } from './menu.ts';
 import { removeMenu } from './menu.ts';
@@ -130,6 +130,18 @@ export async function stagingBeside(bundle: string | undefined): Promise<string[
   if (!bundle) return [];
   const names = await readdir(dirname(bundle)).catch(() => [] as string[]);
   return names.filter((n) => n.startsWith('.files-direct-update-')).map((n) => join(dirname(bundle), n));
+}
+
+/**
+ * Clears what an earlier update left in the download folder when the app starts. Only entries that have not been touched for a while (ten minutes): the app can be started
+ * by an update that is downloading into the same folder at this moment, and an installer that is still running must not lose its file.
+ */
+export async function tidyUpdates(dir: string, olderThanMs = 10 * 60_000, now = Date.now()): Promise<void> {
+  for (const name of await readdir(dir).catch(() => [] as string[])) {
+    const path = join(dir, name);
+    const s = await stat(path).catch(() => null);
+    if (s && now - s.mtimeMs > olderThanMs) await rm(path, { recursive: true, force: true }).catch(() => {});
+  }
 }
 
 /** Takes out the Quick Action, every folder and file the app made in the person's Library, and what an update left (the downloaded file, a folder beside the app). The app itself is deleted by the menu-bar program (the Mac) or the uninstaller (Windows). */

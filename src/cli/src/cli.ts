@@ -15,7 +15,7 @@ import { type Launch, type MenuEffects, MenuUnsupported, installMenu, menuStatus
 import { nodeEffects } from './menu-node.ts';
 import { Desk, serveDesk } from './window.ts';
 import { BUILT_UPDATE_KEY, VERSION, installLine, originFrom, roomEnv } from './config.ts';
-import { type AppInfo, readAppInfo, removeApp, stagingBeside, startInstaller, startSwap, stageMacUpdate, updateFolder } from './app-install.ts';
+import { type AppInfo, readAppInfo, removeApp, stagingBeside, startInstaller, startSwap, stageMacUpdate, tidyUpdates, updateFolder } from './app-install.ts';
 import { UpdateRefused, checkForUpdate, downloadUpdate, refusalText } from './update.ts';
 import { collect } from './fs-source.ts';
 import { etaText, size } from './format.ts';
@@ -306,8 +306,8 @@ async function runMenu(words: string[], io: Io, o: { app: boolean; launcher?: st
       return 2;
     }
     for (const l of await installMenu({ ...io.program, ...(o.app ? { app: true } : {}), ...(o.launcher === undefined ? {} : { launcher: o.launcher }) }, fx)) io.out(l);
-    // the app has just started (after an update too): whatever an earlier update left in the temporary space is not needed any more
-    if (o.app) await fx.removePath(io.update?.dir ?? updateFolder(tmpdir())).catch(() => {});
+    // the app has just started (after an update too): what an earlier update left in the temporary space is not needed any more (what is fresh may be this very update's)
+    if (o.app) await tidyUpdates(io.update?.dir ?? updateFolder(tmpdir()));
     io.out(fx.platform === 'darwin' ? 'In Finder: right-click files or a folder, then choose Quick Actions, then "Send with Files Direct".' : 'In File Explorer: right-click files or a folder. On Windows 11 the entry is under "Show more options". Or choose Send to, then "Files Direct".');
     io.out('Before you uninstall this program, run: files-direct menu remove');
     return 0;
