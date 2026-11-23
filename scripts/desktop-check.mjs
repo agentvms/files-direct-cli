@@ -49,6 +49,9 @@ async function waitFor(file, ms = 30_000) {
   return null;
 }
 
+/** The program and the rest of a command line, the way Windows reads the first word (quoted when it holds a space). */
+const splitCommand = (line) => (line.startsWith('"') ? [line.slice(1, line.indexOf('"', 1)), line.slice(line.indexOf('"', 1) + 2)] : [line.slice(0, line.indexOf(' ')), line.slice(line.indexOf(' ') + 1)]);
+
 const noMarkers = (...dirs) => dirs.every((d) => !readdirSync(d).some((n) => n.startsWith('pwned')));
 
 // ---- install ------------------------------------------------------------------------------------------------------------------------------
@@ -117,8 +120,8 @@ async function entry() {
       for (const file of files) {
         rmSync(out, { force: true });
         const line = verb.replace('%1', () => file);
-        const i = line.indexOf(' ');
-        const r = spawn(line.slice(0, i), [line.slice(i + 1)], { windowsVerbatimArguments: true, cwd, stdio: 'ignore' });
+        const [exe, rest] = splitCommand(line);
+        const r = spawn(exe, [rest], { windowsVerbatimArguments: true, cwd, stdio: 'ignore' });
         r.on('error', () => {});
         const got = JSON.parse((await waitFor(out)) ?? 'null');
         ok(Array.isArray(got) && got.at(-1) === file && got.at(-2) === '--' && got.includes('--detach') && got.includes('--gather'), 'registry entry: ' + JSON.stringify(file.slice(file.lastIndexOf('\\') + 1)) + ' reached the program as one argument');
@@ -318,9 +321,9 @@ async function detach() {
     ok(Boolean(verb), 'read the command of the real registry entry: ' + verb);
     // the registry entry, for the first file only (the others are the same program started again): it has to end quickly, with no window left behind
     const line = verb.replace('%1', () => files[0]);
-    const i = line.indexOf('"', 1);
+    const [exe, rest] = splitCommand(line);
     const started = Date.now();
-    const launcher = spawn(line.slice(0, i + 1).replace(/"/g, ''), [line.slice(i + 2)], { windowsVerbatimArguments: true, env: { ...process.env, FILES_DIRECT_ORIGIN: site }, stdio: 'ignore' });
+    const launcher = spawn(exe, [rest], { windowsVerbatimArguments: true, env: { ...process.env, FILES_DIRECT_ORIGIN: site }, stdio: 'ignore' });
     const code = await new Promise((r) => launcher.on('exit', (c) => r(c)));
     ok(code === 0 && Date.now() - started < 8000, 'the program the entry starts ends at once with status 0 (' + (Date.now() - started) + ' ms)');
     // the real run is a child with no window of its own, and it opens the window
