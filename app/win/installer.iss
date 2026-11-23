@@ -47,3 +47,27 @@ Filename: "{app}\node.exe"; Parameters: """{app}\files-direct.mjs"" menu remove"
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}"
+
+[Code]
+// The tray program has no window an installer could close: ask it to end with its own "quit" command, before files are replaced or deleted.
+procedure StopTray();
+var
+  rc: Integer;
+begin
+  if FileExists(ExpandConstant('{app}\Files Direct.exe')) then begin
+    Exec(ExpandConstant('{app}\Files Direct.exe'), 'quit', '', SW_HIDE, ewWaitUntilTerminated, rc);
+    Sleep(1500);
+  end;
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+begin
+  StopTray();
+  Result := '';
+end;
+
+function InitializeUninstall(): Boolean;
+begin
+  StopTray();
+  Result := True;
+end;

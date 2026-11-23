@@ -388,7 +388,8 @@ async function winInstall(file, label) {
   ok(r.status === 0, 'the installer ran silently (' + basename(file) + ')');
   const text = existsSync(log) ? readFileSync(log, 'utf8') : '';
   note('the installer\'s own log, lines about the mode it ran in:\n' + (text.split(/\r?\n/).filter((l) => /administrative|privilege|install mode|elevat|per.?user|current user/i.test(l)).slice(0, 12).join('\n') || '(none; the log has ' + text.length + ' characters)'));
-  ok(/non[- ]administrative install mode|install for current user only/i.test(text), 'the installer says it ran in the mode for the current user only');
+  // the runner's own account is an administrator (the log says so); what matters is the mode the installer chose: not the all-users one, the current user's part of the registry, run as the current user
+  ok(/Administrative install mode: No/.test(text) && /Install mode root key: HKEY_CURRENT_USER/.test(text) && /Run as: Current user/.test(text), 'the installer ran in the mode for the current user only (not the all-users mode)');
   ok(!/Running in administrative install mode|administrative install mode \(install for all users\)/i.test(text), 'it did not run as a system-wide install');
   ok(run('reg.exe', ['query', 'HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall', '/s']).stdout.indexOf('Files Direct') < 0, 'nothing was written under HKLM');
   ok(existsSync(join(APPDIR(), 'Files Direct.exe')) && existsSync(join(APPDIR(), 'files-direct.mjs')), 'the app is in ' + APPDIR() + ' (the person\'s own folder)');

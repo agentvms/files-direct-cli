@@ -33,6 +33,12 @@ namespace FilesDirect
             {
                 return args.Length < 2 ? 2 : HandOver(args[0], new List<string>(args).GetRange(1, args.Length - 1));
             }
+            if (args.Length >= 1 && args[0] == "quit")
+            {
+                // what the installer and the uninstaller run first: ask the running tray program to end (it has no window an installer could close)
+                try { EventWaitHandle.OpenExisting("Local\\FilesDirectTrayQuit").Set(); } catch (Exception) { }
+                return 0;
+            }
             bool first;
             using (Mutex one = new Mutex(true, "Local\\FilesDirectTray", out first))
             {
@@ -143,6 +149,7 @@ namespace FilesDirect
         readonly ContextMenuStrip menu = new ContextMenuStrip();
         readonly SynchronizationContext ui;
         readonly string version;
+        readonly EventWaitHandle quitSignal = new EventWaitHandle(false, EventResetMode.AutoReset, "Local\\FilesDirectTrayQuit");
 
         public Tray(bool updateNow)
         {
@@ -169,6 +176,7 @@ namespace FilesDirect
                 if (e.Button == MouseButtons.Left) menu.Show(Cursor.Position);
             };
             icon.Visible = true;
+            ThreadPool.RegisterWaitForSingleObject(quitSignal, delegate (object state, bool timedOut) { ui.Post(delegate { Quit(); }, null); }, null, -1, true);
             // the right-click entry is written, or written again, each time the app starts: it points at the launcher in this folder
             ThreadPool.QueueUserWorkItem(delegate
             {
@@ -261,7 +269,7 @@ namespace FilesDirect
 
         protected override void Dispose(bool disposing)
         {
-            if (disposing) { icon.Dispose(); menu.Dispose(); }
+            if (disposing) { icon.Dispose(); menu.Dispose(); quitSignal.Close(); }
             base.Dispose(disposing);
         }
     }
