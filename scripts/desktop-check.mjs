@@ -10,7 +10,8 @@ import { build } from 'esbuild';
 
 const WIN = process.platform === 'win32';
 const MAC = process.platform === 'darwin';
-const PREFIX = process.env.FD_PREFIX ?? join(tmpdir(), 'files-direct-prefix');
+// a folder of the runner's own user, in its temporary space (RUNNER_TEMP): nothing system-wide
+const PREFIX = process.env.FD_PREFIX ?? join(process.env.RUNNER_TEMP ?? tmpdir(), 'files-direct-prefix');
 const PROGRAM = WIN ? join(PREFIX, 'node_modules', 'files-direct', 'dist', 'files-direct.mjs') : join(PREFIX, 'lib', 'node_modules', 'files-direct', 'dist', 'files-direct.mjs');
 const SHOTS = join(process.cwd(), 'desktop-shots');
 const SERVICES = join(homedir(), 'Library', 'Services');

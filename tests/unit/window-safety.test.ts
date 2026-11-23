@@ -10,7 +10,7 @@ import { programDevice } from '../../src/shared/device.ts';
 // files-direct-30, D2: the window's page is served on this computer only, and only to the page that was given it. Every refusal below has its own test.
 // A request is made by hand (node:http), so the Host and Origin it carries are the ones a hostile web page could make a browser send.
 
-const root = realpathSync(mkdtempSync(join(tmpdir(), 'fd-window-')));
+const root = realpathSync(mkdtempSync(join(tmpdir(), 'fd-cli-window-')));
 const env = { origin: 'http://127.0.0.1:1', ice: [], device: programDevice('Linux', 0), install: 'npm install -g x' };
 const servers: DeskServer[] = [];
 afterAll(async () => {

@@ -8,7 +8,7 @@ import { qrSvg } from '../../src/cli/src/qr.ts';
 
 // files-direct-30: the small parts of the window and the menu that have no page of their own.
 
-const root = realpathSync(mkdtempSync(join(tmpdir(), 'fd-parts-')));
+const root = realpathSync(mkdtempSync(join(tmpdir(), 'fd-cli-parts-')));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
 
 describe('one right-click on several files in Windows starts one program for each: they end up in one room', () => {

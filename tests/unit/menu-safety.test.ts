@@ -10,7 +10,7 @@ import { quickActionScript, windowsSendToArguments, windowsVerbCommand } from '.
 // The Mac script runs here under /bin/sh and under bash with a fake program that writes the arguments it got. The Windows command lines are
 // read the way Windows reads them (the C runtime's rules) after Explorer has put the chosen file in the place of %1.
 
-const root = realpathSync(mkdtempSync(join(tmpdir(), 'fd-menu-')));
+const root = realpathSync(mkdtempSync(join(tmpdir(), 'fd-cli-menu-')));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
 
 /** Every name that has to survive. Control characters and a newline only where the system allows them. */
