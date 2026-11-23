@@ -98,8 +98,10 @@ jobs:
       - name: A hostile name through the launcher (the careless launcher breaks, the real one does not)
         run: node scripts/app-check.mjs win-hostile
       - name: Install with no administrator, the tray program, the entries, send two files and a folder, uninstall leaves nothing
+        if: ${{ !cancelled() }}
         run: node scripts/app-check.mjs win-app
       - name: Update from a stand-in feed (a newer build is installed; a changed, wrongly signed or older one is refused), then uninstall
+        if: ${{ !cancelled() }}
         run: node scripts/app-check.mjs win-update
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
