@@ -384,7 +384,7 @@ const installerArgs = (log) => ['/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART'
 
 async function winInstall(file, label) {
   const log = join(WORK, 'setup-' + label + '.log');
-  const r = run(file, installerArgs(log));
+  const r = run(file, installerArgs(log), { stdio: 'ignore', timeout: 300_000 });
   ok(r.status === 0, 'the installer ran silently (' + basename(file) + ')');
   const text = existsSync(log) ? readFileSync(log, 'utf8') : '';
   ok(/non administrative install mode/i.test(text), 'the installer says it ran in the mode for the current user only: ' + (/.*non administrative install mode.*/i.exec(text)?.[0] ?? 'not found'));
@@ -427,7 +427,7 @@ async function winApp() {
 
   // Remove: the uninstaller the menu item starts
   for (const e of trayRunning()) run('taskkill', ['/PID', e.split(' ')[1], '/F']);
-  const un = run(join(APPDIR(), 'unins000.exe'), ['/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART']);
+  const un = run(join(APPDIR(), 'unins000.exe'), ['/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART'], { stdio: 'ignore', timeout: 300_000 });
   ok(un.status === 0, 'the uninstaller ran silently');
   ok(await until('the app folder to go', () => !existsSync(APPDIR()), 90_000), 'the app folder is gone');
   sameListing(before, listing(), 'after uninstalling');
@@ -453,7 +453,7 @@ async function winHostile() {
     // what Explorer does: the registry command with %1 filled in, once per file; Send to: every file, each in quotes
     const verbOk = [];
     const sendtoLine = 'sendto ' + files.map((f) => '"' + f + '"').join(' ');
-    const first = run(exe, [sendtoLine], { windowsVerbatimArguments: true, cwd: work });
+    const first = run(exe, [sendtoLine], { windowsVerbatimArguments: true, cwd: work, stdio: 'ignore', timeout: 30_000 });
     const seen = JSON.parse((await until('the stand-in engine (' + kind + ')', () => existsSync(log) && readFileSync(log, 'utf8'), 20_000)) ?? 'null');
     const expected = ['open', '--app', '--paths-stdin'];
     const exact = seen && JSON.stringify(seen.argv) === JSON.stringify(expected) && JSON.stringify(seen.stdin) === JSON.stringify(files);
@@ -462,7 +462,7 @@ async function winHostile() {
     else {
       ok(first.status === 0 && exact, 'the launcher started the engine with exactly "' + expected.join(' ') + '" and all ' + files.length + ' names on its standard input, none on the command line');
       rmSync(log, { force: true });
-      run(exe, ['verb "' + files[3] + '"'], { windowsVerbatimArguments: true, cwd: work });
+      run(exe, ['verb "' + files[3] + '"'], { windowsVerbatimArguments: true, cwd: work, stdio: 'ignore', timeout: 30_000 });
       const one = JSON.parse((await until('the stand-in engine (verb)', () => existsSync(log) && readFileSync(log, 'utf8'), 20_000)) ?? 'null');
       ok(one && JSON.stringify(one.argv) === JSON.stringify(['open', '--app', '--gather', '--paths-stdin']) && JSON.stringify(one.stdin) === JSON.stringify([files[3]]), 'the registry entry\'s form ("verb") passes one path and asks the engine to gather the others');
     }
@@ -509,7 +509,7 @@ async function winUpdate() {
   ok(run(node, [engine, 'version']).stdout.trim() === '99.0.0', 'the new engine says it is 99.0.0');
   site.stop();
   for (const e of trayRunning()) run('taskkill', ['/PID', e.split(' ')[1], '/F']);
-  run(join(APPDIR(), 'unins000.exe'), ['/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART']);
+  run(join(APPDIR(), 'unins000.exe'), ['/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART'], { stdio: 'ignore', timeout: 300_000 });
   await until('the app folder to go', () => !existsSync(APPDIR()), 90_000);
   sameListing(before, listing(), 'after the update test and uninstalling');
 }
