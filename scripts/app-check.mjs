@@ -28,6 +28,17 @@ const ok = (cond, text) => {
 const note = (text) => console.log('seen    ' + text.replace(/\n/g, '\n        '));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const run = (cmd, args, o = {}) => spawnSync(cmd, args, { encoding: 'utf8', ...o });
+/** Like run, without stopping this script: a stand-in site that runs inside it must be able to answer while the program waits for it. */
+const runAsync = (cmd, args, o = {}) =>
+  new Promise((done) => {
+    const c = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'], ...o });
+    let stdout = '';
+    let stderr = '';
+    c.stdout.on('data', (d) => (stdout += d));
+    c.stderr.on('data', (d) => (stderr += d));
+    c.on('error', (e) => done({ status: 127, stdout, stderr: String(e) }));
+    c.on('close', (status) => done({ status, stdout, stderr }));
+  });
 async function until(what, fn, ms = 30_000) {
   for (let t = 0; t < ms; t += 250) {
     const v = await fn();
@@ -319,10 +330,10 @@ async function macUpdate() {
   ok(plistVersion() === oldVersion, 'it says it is ' + oldVersion);
   const node = join(RES(), 'node');
   const engine = join(RES(), 'files-direct.mjs');
-  const asked = (origin, extra = []) => run(node, [engine, 'update', 'install', '--json', '--wait-for', '1', ...extra], { env: { ...process.env, FILES_DIRECT_ORIGIN: origin } });
+  const asked = (origin, extra = []) => runAsync(node, [engine, 'update', 'install', '--json', '--wait-for', '1', ...extra], { env: { ...process.env, FILES_DIRECT_ORIGIN: origin } });
   const refuses = async (what, site, reason) => {
     const s = await feedServer(site);
-    const r = asked(s.origin);
+    const r = await asked(s.origin);
     s.stop();
     const line = r.stdout.trim().split('\n').pop();
     ok(r.status === 1 && line.includes('"reason":"' + reason + '"'), what + ': refused with "' + reason + '"');
@@ -434,7 +445,7 @@ async function winHostile() {
     // a stand-in engine: writes the words it was started with and what came on its standard input
     writeFileSync(join(home, 'files-direct.mjs'), "import { writeFileSync } from 'node:fs'; const chunks = []; for await (const c of process.stdin) chunks.push(c); writeFileSync(" + JSON.stringify(log) + ", JSON.stringify({ argv: process.argv.slice(2), stdin: Buffer.concat(chunks).toString('utf8').split('\\0').filter(Boolean) }));\n");
     // names Windows allows; the ones with a quote, a backslash or a line break cannot exist here
-    const hostile = ['plain.txt', 'two words.txt', "it's.txt", 'a;touch pwned.txt', '$(touch pwned).txt', '`touch pwned`.txt', 'a&touch pwned&.txt', '100%.txt', '%1 %L %V %*.txt', 'caret^name.txt', '-rf.txt', '--help', '$HOME', '! history', '#hash', 'ünï-名前.txt', '  padded.txt', 'sp ace  double.txt'];
+    const hostile = ['plain.txt', 'two words.txt', "it's.txt", 'a;touch pwned.txt', '$(touch pwned).txt', '`touch pwned`.txt', 'a&touch pwned&.txt', '100%.txt', '%1 %L %V.txt', 'caret^name.txt', '-rf.txt', '--help', '$HOME', '! history', '#hash', 'ünï-名前.txt', '  padded.txt', 'sp ace  double.txt'];
     const dir = join(work, 'files');
     mkdirSync(dir);
     const files = hostile.map((n, i) => (writeFileSync(join(dir, n), 'c' + i), join(dir, n)));
@@ -478,7 +489,7 @@ async function winUpdate() {
   const engine = join(APPDIR(), 'files-direct.mjs');
   const refuses = async (what, site, reason) => {
     const s = await feedServer(site);
-    const r = run(node, [engine, 'update', 'install', '--json'], { env: { ...process.env, FILES_DIRECT_ORIGIN: s.origin } });
+    const r = await runAsync(node, [engine, 'update', 'install', '--json'], { env: { ...process.env, FILES_DIRECT_ORIGIN: s.origin } });
     s.stop();
     ok(r.status === 1 && r.stdout.includes('"reason":"' + reason + '"'), what + ': refused with "' + reason + '"');
     ok(exeVersion() === oldVersion, '  the app is still ' + oldVersion);

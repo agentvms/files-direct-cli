@@ -117,10 +117,14 @@ export interface UpdateOptions {
   fetch?: typeof fetch;
 }
 
-async function get(f: typeof fetch, origin: string, path: string): Promise<Response> {
+/** A site that does not answer must not hold the app: the list gets half a minute, a file (which may be big and the line slow) twenty minutes. */
+const LIST_MS = 30_000;
+const FILE_MS = 20 * 60_000;
+
+async function get(f: typeof fetch, origin: string, path: string, ms = LIST_MS): Promise<Response> {
   let res: Response;
   try {
-    res = await f(origin + path, { redirect: 'error', headers: { accept: '*/*' } });
+    res = await f(origin + path, { redirect: 'error', headers: { accept: '*/*' }, signal: AbortSignal.timeout(ms) });
   } catch (e) {
     // a refused redirect and an unreachable site are told apart: only the first is about the address
     throw new UpdateRefused(/redirect/i.test(String((e as { cause?: unknown; message?: string })?.message ?? '') + String((e as { cause?: { message?: string } })?.cause?.message ?? '')) ? 'address' : 'unreachable');
@@ -154,7 +158,7 @@ export async function checkForUpdate(o: UpdateOptions): Promise<Check> {
 /** Takes the file the signed list names into dir, counting its size and SHA-256 as it arrives. Returns its path; a file that is not exactly what was signed is removed. */
 export async function downloadUpdate(o: { origin: string; file: FeedFile; dir: string; fetch?: typeof fetch }): Promise<string> {
   await mkdir(o.dir, { recursive: true });
-  const res = await get(o.fetch ?? fetch, o.origin, '/desktop/' + o.file.name);
+  const res = await get(o.fetch ?? fetch, o.origin, '/desktop/' + o.file.name, FILE_MS);
   const length = res.headers.get('content-length');
   if (length !== null && Number(length) !== o.file.size) throw new UpdateRefused('size');
   if (!res.body) throw new UpdateRefused('size');
