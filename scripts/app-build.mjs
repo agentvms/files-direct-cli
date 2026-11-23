@@ -9,9 +9,9 @@ import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { deflateSync } from 'node:zlib';
 import { build } from 'esbuild';
 import { fileNames } from './app-feed.mjs';
+import { iconPng } from './icon-png.mjs';
 
 export const NODE_VERSION = '22.23.5';
 /** Official Node archives (https://nodejs.org/dist/v<version>/SHASUMS256.txt) and the SHA-256 each one must have. */
@@ -19,7 +19,8 @@ export const TARGETS = {
   'mac-arm64': { os: 'darwin', archive: `node-v${NODE_VERSION}-darwin-arm64.tar.gz`, sha256: 'e7131995759b61a0170b646010d2ad35a5d37b4cb0d471f3e8317eac6f742f3d', native: '@node-datachannel/darwin-arm64', binary: 'bin/node' },
   'mac-x64': { os: 'darwin', archive: `node-v${NODE_VERSION}-darwin-x64.tar.gz`, sha256: 'c53383238206b9ae4db23c5d8a63645e2e753bec8ab51a49cc81939aa64e9422', native: '@node-datachannel/darwin-x64', binary: 'bin/node' },
   'win-x64': { os: 'win32', archive: `node-v${NODE_VERSION}-win-x64.zip`, sha256: '4a191082e9706866830379d577d2cc8a50c776fcd9436a8d061b063ed0d9a0e3', native: '@node-datachannel/win32-x64-msvc', binary: 'node.exe' },
-  // only for trying this script on a Linux machine; no app is made for it
+  // only for trying this script on a Linux machine (the packaged runtime against a real browser page on the Epic VM, scripts/e2e-packaged.mjs); no app is made for it
+  'linux-x64': { os: 'linux', archive: `node-v${NODE_VERSION}-linux-x64.tar.xz`, sha256: 'cdeb8670a0c81f51b4dc4ac61919f9b1ad917b304bf8221eb939570663d240f8', native: '@node-datachannel/linux-x64-gnu', binary: 'bin/node' },
   'linux-arm64': { os: 'linux', archive: `node-v${NODE_VERSION}-linux-arm64.tar.xz`, sha256: '2babb9eb5264860d540849f4b064a6fbdebcdc323657d9d382ce23d313fd5e09', native: '@node-datachannel/linux-arm64-gnu', binary: 'bin/node' },
 };
 
@@ -87,53 +88,11 @@ export function copyNative(target, into) {
   keep(from(...t.native.split('/')), join(into, 'node_modules', ...t.native.split('/')));
 }
 
-// ---- icons: drawn here, no pictures in the repository for them ---------------------------------------------------------------------------
+// ---- icons: one drawing, shared with the web app's icons (scripts/icon-png.mjs) -------------------------------------------------------------
 
-const BG = [10, 108, 92];
-const crcTable = Array.from({ length: 256 }, (_, n) => {
-  let c = n;
-  for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
-  return c >>> 0;
-});
-const crc32 = (buf) => {
-  let c = 0xffffffff;
-  for (const b of buf) c = crcTable[(c ^ b) & 0xff] ^ (c >>> 8);
-  return (c ^ 0xffffffff) >>> 0;
-};
-const chunk = (type, data) => {
-  const out = Buffer.alloc(12 + data.length);
-  out.writeUInt32BE(data.length, 0);
-  out.write(type, 4, 'ascii');
-  data.copy(out, 8);
-  out.writeUInt32BE(crc32(out.subarray(4, 8 + data.length)), 8 + data.length);
-  return out;
-};
-/** A white arrow dropping into a tray, on the accent colour: the same drawing as the web app's icons. */
-const arrow = (u, v) =>
-  (u > 0.44 && u < 0.56 && v > 0.2 && v < 0.55) || (v >= 0.5 && v < 0.7 && Math.abs(u - 0.5) < (0.7 - v) * 1.1) || (v > 0.74 && v < 0.82 && u > 0.22 && u < 0.78) || (u > 0.22 && u < 0.3 && v > 0.62 && v < 0.82) || (u > 0.7 && u < 0.78 && v > 0.62 && v < 0.82);
-export function iconPng(size) {
-  const SS = size >= 256 ? 2 : 4;
-  const rows = [];
-  for (let py = 0; py < size; py++) {
-    const row = Buffer.alloc(1 + size * 3);
-    for (let px = 0; px < size; px++) {
-      let hit = 0;
-      for (let sy = 0; sy < SS; sy++) for (let sx = 0; sx < SS; sx++) if (arrow((px + (sx + 0.5) / SS) / size, (py + (sy + 0.5) / SS) / size)) hit++;
-      const a = hit / (SS * SS);
-      for (let c = 0; c < 3; c++) row[1 + px * 3 + c] = Math.round(BG[c] * (1 - a) + 255 * a);
-    }
-    rows.push(row);
-  }
-  const ihdr = Buffer.alloc(13);
-  ihdr.writeUInt32BE(size, 0);
-  ihdr.writeUInt32BE(size, 4);
-  ihdr[8] = 8;
-  ihdr[9] = 2;
-  return Buffer.concat([Buffer.from('89504e470d0a1a0a', 'hex'), chunk('IHDR', ihdr), chunk('IDAT', deflateSync(Buffer.concat(rows), { level: 9 })), chunk('IEND', Buffer.alloc(0))]);
-}
 /** A Windows .ico holding PNG pictures. */
 export function iconIco(sizes = [16, 32, 48, 256]) {
-  const pngs = sizes.map(iconPng);
+  const pngs = sizes.map((s) => iconPng(s, { samples: s >= 256 ? 2 : 4 }));
   const head = Buffer.alloc(6 + 16 * sizes.length);
   head.writeUInt16LE(1, 2);
   head.writeUInt16LE(sizes.length, 4);
@@ -163,7 +122,7 @@ function macIcns(work) {
   const set = join(work, 'AppIcon.iconset');
   rmSync(set, { recursive: true, force: true });
   mkdirSync(set, { recursive: true });
-  for (const [name, px] of [['icon_16x16', 16], ['icon_16x16@2x', 32], ['icon_32x32', 32], ['icon_32x32@2x', 64], ['icon_128x128', 128], ['icon_128x128@2x', 256], ['icon_256x256', 256], ['icon_256x256@2x', 512], ['icon_512x512', 512], ['icon_512x512@2x', 1024]]) writeFileSync(join(set, name + '.png'), iconPng(px));
+  for (const [name, px] of [['icon_16x16', 16], ['icon_16x16@2x', 32], ['icon_32x32', 32], ['icon_32x32@2x', 64], ['icon_128x128', 128], ['icon_128x128@2x', 256], ['icon_256x256', 256], ['icon_256x256@2x', 512], ['icon_512x512', 512], ['icon_512x512@2x', 1024]]) writeFileSync(join(set, name + '.png'), iconPng(px, { samples: px >= 256 ? 2 : 4 }));
   const out = join(work, 'AppIcon.icns');
   sh('iconutil', ['-c', 'icns', '-o', out, set]);
   return out;

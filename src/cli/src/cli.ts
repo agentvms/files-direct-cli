@@ -1,6 +1,7 @@
 import { parseArgs } from 'node:util';
 import { spawn } from 'node:child_process';
 import { homedir, tmpdir } from 'node:os';
+import { rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { cleanNote } from '../../shared/ask.ts';
 import { formatCode } from '../../shared/code.ts';
@@ -14,7 +15,7 @@ import { type Launch, type MenuEffects, MenuUnsupported, installMenu, menuStatus
 import { nodeEffects } from './menu-node.ts';
 import { Desk, serveDesk } from './window.ts';
 import { BUILT_UPDATE_KEY, VERSION, installLine, originFrom, roomEnv } from './config.ts';
-import { type AppInfo, readAppInfo, removeApp, startInstaller, startSwap, stageMacUpdate } from './app-install.ts';
+import { type AppInfo, readAppInfo, removeApp, stagingBeside, startInstaller, startSwap, stageMacUpdate, updateFolder } from './app-install.ts';
 import { UpdateRefused, checkForUpdate, downloadUpdate, refusalText } from './update.ts';
 import { collect } from './fs-source.ts';
 import { etaText, size } from './format.ts';
@@ -305,6 +306,8 @@ async function runMenu(words: string[], io: Io, o: { app: boolean; launcher?: st
       return 2;
     }
     for (const l of await installMenu({ ...io.program, ...(o.app ? { app: true } : {}), ...(o.launcher === undefined ? {} : { launcher: o.launcher }) }, fx)) io.out(l);
+    // the app has just started (after an update too): whatever an earlier update left in the temporary space is not needed any more
+    if (o.app) await fx.removePath(io.update?.dir ?? updateFolder(tmpdir())).catch(() => {});
     io.out(fx.platform === 'darwin' ? 'In Finder: right-click files or a folder, then choose Quick Actions, then "Send with Files Direct".' : 'In File Explorer: right-click files or a folder. On Windows 11 the entry is under "Show more options". Or choose Send to, then "Files Direct".');
     io.out('Before you uninstall this program, run: files-direct menu remove');
     return 0;
@@ -402,7 +405,8 @@ async function runApp(words: string[], io: Io): Promise<number> {
   }
   const fx = io.menu ?? nodeEffects(io.env);
   try {
-    const gone = await removeApp(fx, io.update?.dir ? [io.update.dir] : []);
+    const bundle = io.update && 'info' in io.update ? io.update.info?.bundle : io.program ? readAppInfo(io.program.script)?.bundle : undefined;
+    const gone = await removeApp(fx, [io.update?.dir ?? updateFolder(tmpdir()), ...(await stagingBeside(bundle))]);
     for (const l of gone.length ? gone : ['There was nothing to remove.']) io.out(l);
     return 0;
   } catch (e) {
@@ -437,7 +441,7 @@ async function runUpdate(words: string[], o: { json: boolean; waitFor?: string }
       return 0;
     }
     say({ state: 'downloading', version: found.version, size: found.file.size }, 'Downloading Files Direct ' + found.version + '…');
-    const dir = io.update?.dir ?? join(tmpdir(), 'files-direct-update');
+    const dir = io.update?.dir ?? updateFolder(tmpdir());
     const file = await downloadUpdate({ origin, file: found.file, dir, fetch: io.update?.fetch });
     const platform = io.update?.platform ?? process.platform;
     if (platform === 'win32') {
@@ -446,7 +450,7 @@ async function runUpdate(words: string[], o: { json: boolean; waitFor?: string }
       if (!info.bundle) return fail('update_not_app', 'This copy of the app does not know where it is installed.');
       const pid = Number(o.waitFor);
       if (!Number.isInteger(pid) || pid < 1) return fail('usage', 'update install needs --wait-for <the number of the menu-bar program>, which the swap waits for.');
-      const staged = await stageMacUpdate({ archive: file, bundle: info.bundle, feed: found });
+      const staged = await stageMacUpdate({ archive: file, bundle: info.bundle, feed: found }).finally(() => rm(file, { force: true })); // unpacked, or refused: the downloaded file is not needed any more
       startSwap({ pid, bundle: info.bundle, newBundle: staged.bundle, stage: staged.stage, spawnFn: io.spawn });
     }
     say({ state: 'restarting', version: found.version }, 'Files Direct ' + found.version + ' is checked and will start in a moment.');

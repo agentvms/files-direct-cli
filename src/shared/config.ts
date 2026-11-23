@@ -10,8 +10,15 @@ export const publicReleaseTarball = (version: string): string => `${PUBLIC_REPO_
  * Made by the Factory lead; the secret half is only ever a secret (FD_UPDATE_SIGNING_KEY) of the public repository's release workflow. With an empty key a copy of the app never updates itself.
  */
 export const UPDATE_PUBLIC_KEY = 'DWKN0R/GF/YjYe5KKyJkwfD7qJTk6NG0QCaM1ILp/2g=';
-/** Where the app's files are attached to a release in the public repository: the Worker streams them from here under /desktop/ and keeps nothing. */
-export const publicReleaseAsset = (name: string): string => `${PUBLIC_REPO_URL}/releases/latest/download/${name}`;
+/**
+ * Where the app's files are attached to a release in the public repository: the Worker streams them from here under /desktop/ and keeps nothing.
+ * A file with a version in its name comes from that version's own release, so a download page or a list that is a few minutes old still finds it after the next
+ * release is out; only the list of updates (feed.json and its signature) is the latest release's.
+ */
+export const publicReleaseAsset = (name: string): string => {
+  const version = /^files-direct(?:-setup)?-(\d{1,4}\.\d{1,4}\.\d{1,4})-/.exec(name)?.[1];
+  return version ? `${PUBLIC_REPO_URL}/releases/download/v${version}/${name}` : `${PUBLIC_REPO_URL}/releases/latest/download/${name}`;
+};
 
 /** Cloudflare's public addresses for finding a direct route (3478 and 443 for networks that block 3478). */
 export const ICE_URLS = ['stun:stun.cloudflare.com:3478', 'stun:stun.cloudflare.com:443'];

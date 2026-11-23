@@ -4,7 +4,7 @@
  */
 import { spawn } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import { mkdtemp, readFile } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import type { MenuEffects } from './menu.ts';
 import { removeMenu } from './menu.ts';
@@ -75,15 +75,20 @@ export async function stageMacUpdate(o: { archive: string; bundle: string; feed:
   } catch {
     throw new Error('Files Direct cannot update here: the folder the app is in is not yours to change. Put the app in your own Applications folder and try again.');
   }
-  const r = await run(o.tar ?? '/usr/bin/tar', ['-xf', o.archive, '-C', stage]);
-  if (r.code !== 0) throw new Error('The update could not be unpacked.');
-  const bundle = join(stage, MAC_APP);
-  const plist = await readFile(join(bundle, 'Contents', 'Info.plist'), 'utf8').catch(() => {
-    throw new Error('The update did not hold the app.');
-  });
-  const version = /<key>CFBundleShortVersionString<\/key>\s*<string>([^<]*)<\/string>/.exec(plist)?.[1];
-  if (version !== o.feed.version) throw new UpdateRefused('feed');
-  return { stage, bundle };
+  try {
+    const r = await run(o.tar ?? '/usr/bin/tar', ['-xf', o.archive, '-C', stage]);
+    if (r.code !== 0) throw new Error('The update could not be unpacked.');
+    const bundle = join(stage, MAC_APP);
+    const plist = await readFile(join(bundle, 'Contents', 'Info.plist'), 'utf8').catch(() => {
+      throw new Error('The update did not hold the app.');
+    });
+    const version = /<key>CFBundleShortVersionString<\/key>\s*<string>([^<]*)<\/string>/.exec(plist)?.[1];
+    if (version !== o.feed.version) throw new UpdateRefused('feed');
+    return { stage, bundle };
+  } catch (e) {
+    await rm(stage, { recursive: true, force: true }); // a refused update leaves nothing next to the app
+    throw e;
+  }
 }
 
 /** Starts the swap, which waits for process number "pid" (the menu-bar program) to end. Nothing is pasted into the script: it gets its four words as arguments. */
@@ -119,15 +124,21 @@ export const MAC_LEFTOVERS = (home: string): string[] => [
   home + '/Library/LaunchAgents/' + APP_BUNDLE_ID + '.plist',
 ];
 
-/** Takes out the Quick Action and every folder and file the app made in the person's Library. The app itself is deleted by the menu-bar program (the Mac) or the uninstaller (Windows). */
+/** Where a downloaded update waits (the program's own folder in the temporary space), and what an update leaves beside the app while it is being put in place. */
+export const updateFolder = (tmp: string): string => join(tmp, 'files-direct-update');
+export async function stagingBeside(bundle: string | undefined): Promise<string[]> {
+  if (!bundle) return [];
+  const names = await readdir(dirname(bundle)).catch(() => [] as string[]);
+  return names.filter((n) => n.startsWith('.files-direct-update-')).map((n) => join(dirname(bundle), n));
+}
+
+/** Takes out the Quick Action, every folder and file the app made in the person's Library, and what an update left (the downloaded file, a folder beside the app). The app itself is deleted by the menu-bar program (the Mac) or the uninstaller (Windows). */
 export async function removeApp(fx: MenuEffects, extra: string[] = []): Promise<string[]> {
   const gone = await removeMenu(fx);
-  if (fx.platform === 'darwin') {
-    for (const p of [...MAC_LEFTOVERS(fx.home), ...extra]) {
-      if (await fx.exists(p)) {
-        await fx.removePath(p);
-        gone.push('Removed ' + p + '.');
-      }
+  for (const p of [...(fx.platform === 'darwin' ? MAC_LEFTOVERS(fx.home) : []), ...extra]) {
+    if (await fx.exists(p)) {
+      await fx.removePath(p);
+      gone.push('Removed ' + p + '.');
     }
   }
   return gone;

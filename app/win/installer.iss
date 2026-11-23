@@ -43,7 +43,7 @@ Filename: "{app}\node.exe"; Parameters: """{app}\files-direct.mjs"" menu install
 Filename: "{app}\Files Direct.exe"; Flags: nowait postinstall runasoriginaluser; Description: "Open Files Direct"
 
 [UninstallRun]
-Filename: "{app}\node.exe"; Parameters: """{app}\files-direct.mjs"" menu remove"; Flags: runhidden waituntilterminated; RunOnceId: "RemoveFilesDirectMenu"
+Filename: "{app}\node.exe"; Parameters: """{app}\files-direct.mjs"" app remove"; Flags: runhidden waituntilterminated; RunOnceId: "RemoveFilesDirectMenu"
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}"

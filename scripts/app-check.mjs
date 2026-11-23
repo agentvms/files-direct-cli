@@ -64,7 +64,6 @@ function startStub() {
 
 /** Sends the given files and folders from the window of the program at (node, engine) to a receiving program, and compares every byte by SHA-256. */
 export async function transfer({ node, engine, origin, items, viaStdin = false, cwd = WORK }) {
-  const to = mkdtempSync(join(WORK, 'got-'));
   const env = { ...process.env, FILES_DIRECT_ORIGIN: origin };
   const args = [engine, 'open', '--app', '--no-window', '--json', ...(viaStdin ? ['--paths-stdin'] : ['--', ...items])];
   const sender = spawn(node, args, { env, cwd, stdio: ['pipe', 'pipe', 'inherit'] });
@@ -83,6 +82,16 @@ export async function transfer({ node, engine, origin, items, viaStdin = false, 
   });
   const exited = new Promise((r) => sender.on('close', r));
   if (!ok(await until('the window address', () => url), 'the window started and said its address')) return false;
+  const same = await completeTransfer({ url, node, engine, origin, items, cwd });
+  await Promise.race([exited, sleep(10_000)]);
+  sender.kill();
+  return same;
+}
+
+/** Given the address of a window that is waiting with its files: a receiving program takes what is offered, the window is closed, and every byte is compared by SHA-256. */
+async function completeTransfer({ url, node, engine, origin, items, cwd = WORK }) {
+  const to = mkdtempSync(join(WORK, 'got-'));
+  const env = { ...process.env, FILES_DIRECT_ORIGIN: origin };
   const post = (body) => fetch(url + 'act', { method: 'POST', headers: { 'content-type': 'application/json', origin: new URL(url).origin }, body: JSON.stringify(body) });
   const state = async () => (await fetch(url + 'state')).json();
   const waiting = await until('the room to be waiting', async () => {
@@ -98,9 +107,7 @@ export async function transfer({ node, engine, origin, items, viaStdin = false, 
     return s.phase === 'done' || s.phase === 'failed' || s.phase === 'cancelled' ? s : null;
   }, 90_000);
   ok(done?.phase === 'done', 'the window says the transfer is done' + (done ? ' (phase ' + done.phase + ': ' + done.message + ')' : ''));
-  await post({ do: 'close' });
-  await Promise.race([exited, sleep(10_000)]);
-  sender.kill();
+  await post({ do: 'close' }).catch(() => {});
   receiver.kill();
   // every byte, by SHA-256
   let same = true;
@@ -115,6 +122,45 @@ export async function transfer({ node, engine, origin, items, viaStdin = false, 
   ok(same, 'every file that was sent arrived with the same SHA-256 (' + items.length + ' items, received into ' + to + ')');
   if (!same) note('receiver said: ' + said.slice(-500));
   return same;
+}
+
+/** The address of the window a menu entry opened: it is on the command line of the browser the program started (--app=<address>). */
+async function findWindowUrl() {
+  const processes = () =>
+    MAC
+      ? run('ps', ['-axo', 'args']).stdout
+      : run('powershell.exe', ['-NoProfile', '-Command', "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*--app=http://127.0.0.1:*' } | ForEach-Object { $_.CommandLine }"]).stdout;
+  return until('the window the entry opened', () => /--app=(http:\/\/127\.0\.0\.1:\d+\/w\/[\w-]+\/)/.exec(processes())?.[1] ?? null, 60_000);
+}
+
+/**
+ * The real entry, not a stand-in: what the person's right-click runs (the Quick Action's script on a Mac; the registry command, once for each chosen item, on Windows)
+ * starts the app's bundled Node and engine, which starts a window in a real browser. A receiving program then takes the files from it.
+ * The receiving side is a program, not a browser page: the page that receives is the site's own and is not in this repository (it is checked against the window of the
+ * packaged runtime on the Epic VM, e2e/window.spec.ts with FD_APP_DIR).
+ */
+async function entryTransfer({ node, engine, origin, files }) {
+  const env = { ...process.env, FILES_DIRECT_ORIGIN: origin };
+  if (MAC) {
+    const wf = join(homedir(), 'Library', 'Services', 'Send with Files Direct.workflow', 'Contents', 'document.wflow');
+    const script = join(WORK, 'real-action.sh');
+    writeFileSync(script, run('plutil', ['-extract', 'actions.0.action.ActionParameters.COMMAND_STRING', 'raw', '-o', '-', wf]).stdout);
+    const r = run('/bin/bash', [script, ...files.items], { env, cwd: WORK });
+    ok(r.status === 0, 'the installed Quick Action\'s own script ran with the chosen files (two files and a folder)');
+  } else {
+    const commands = [KEYS[0], KEYS[0], KEYS[1]].map(regDefault);
+    ok(commands.every(Boolean), 'read the commands of the installed registry entries');
+    files.items.forEach((item, i) => {
+      const line = commands[i].replace('%1', item); // what Explorer does with %1
+      const exe = line.slice(1, line.indexOf('"', 1));
+      const tail = line.slice(line.indexOf('"', 1) + 2);
+      spawn(exe, [tail], { windowsVerbatimArguments: true, argv0: '"' + exe + '"', env, cwd: WORK, stdio: 'ignore', detached: true }).unref();
+    });
+  }
+  const url = await findWindowUrl();
+  if (!ok(url, 'the entry opened a window in a real browser (its address is on the browser\'s command line)')) return false;
+  run(MAC ? 'screencapture' : 'powershell.exe', MAC ? ['-x', join(SHOTS, 'entry-window.png')] : ['-NoProfile', '-Command', 'exit 0']); // best effort: a build machine may have no screen
+  return completeTransfer({ url, node, engine, origin, items: files.items });
 }
 
 /** Two files and a folder, with names made to run something. Windows does not allow some of the characters in a name. */
@@ -137,6 +183,7 @@ const noPwned = (...dirs) => dirs.every((d) => !readdirSync(d).some((n) => n.sta
 const names = (d) => (existsSync(d) ? readdirSync(d).sort() : []);
 // a runner's shared folders (Caches, Preferences and the like) change by themselves while a check runs: for those, the entries that carry our name are listed
 const ours = (d) => names(d).filter((n) => /files.?direct|tnyforge/i.test(n));
+const updateFolder = () => names(join(tmpdir(), 'files-direct-update')); // where a downloaded update waits (cli/src/app-install.ts)
 const listing = () => {
   const h = homedir();
   if (MAC) {
@@ -149,6 +196,7 @@ const listing = () => {
       'Library/Saved Application State (our names)': ours(join(h, 'Library/Saved Application State')),
       'Library/HTTPStorages (our names)': ours(join(h, 'Library/HTTPStorages')),
       Applications: names(join(h, 'Applications')),
+      'temporary update folder': updateFolder(),
       processes: run('pgrep', ['-lx', 'FilesDirect']).stdout.trim() ? ['FilesDirect is running'] : [],
     };
   }
@@ -162,6 +210,7 @@ const listing = () => {
     SendTo: names(join(process.env.APPDATA, 'Microsoft', 'Windows', 'SendTo')),
     'Start menu': names(join(process.env.APPDATA, 'Microsoft', 'Windows', 'Start Menu', 'Programs')),
     'LocalAppData Programs': names(app),
+    'temporary update folder': updateFolder(),
     processes: run('powershell.exe', ['-NoProfile', '-Command', "Get-Process | Where-Object { $_.Path -like '*\\Programs\\Files Direct\\*' } | ForEach-Object { $_.ProcessName }"]).stdout.split(/\r?\n/).filter(Boolean),
   };
 };
@@ -260,6 +309,10 @@ async function macApp() {
   const files = sampleFiles();
   await transfer({ node: join(RES(), 'node'), engine: join(RES(), 'files-direct.mjs'), origin: stub.origin, items: files.items });
   ok(noPwned(files.dir, WORK), 'no file called pwned appeared anywhere');
+  // and through the real entry: the installed Quick Action's script, the bundled Node, a window in a real browser
+  const entryFiles = sampleFiles();
+  await entryTransfer({ node: join(RES(), 'node'), engine: join(RES(), 'files-direct.mjs'), origin: stub.origin, files: entryFiles });
+  ok(noPwned(entryFiles.dir, WORK), 'no file called pwned appeared anywhere (through the entry)');
   stub.stop();
 
   // the Quick Action, written for a stand-in program, with the app's own Node: names made to run something arrive as separate arguments
@@ -427,6 +480,10 @@ async function winApp() {
   const files = sampleFiles();
   await transfer({ node: join(APPDIR(), 'node.exe'), engine: join(APPDIR(), 'files-direct.mjs'), origin: stub.origin, items: files.items, viaStdin: true });
   ok(noPwned(files.dir, WORK), 'no file called pwned appeared anywhere');
+  // and through the real entries: the installed registry commands (once for each chosen item, as Explorer does), the launcher, the bundled Node, a window in a real browser
+  const entryFiles = sampleFiles();
+  await entryTransfer({ node: join(APPDIR(), 'node.exe'), engine: join(APPDIR(), 'files-direct.mjs'), origin: stub.origin, files: entryFiles });
+  ok(noPwned(entryFiles.dir, WORK), 'no file called pwned appeared anywhere (through the entries)');
   stub.stop();
 
   // Remove: the uninstaller the menu item starts, with the tray program still running (the program closes it itself when the person chooses Remove in its menu; from Settings the uninstaller has to)
