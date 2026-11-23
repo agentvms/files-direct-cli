@@ -29,8 +29,8 @@ const run = (cmd, args, o = {}) => spawnSync(cmd, args, { encoding: 'utf8', ...o
 const program = (args, o = {}) => run(process.execPath, [PROGRAM, ...args], o);
 
 /** Every name that has to survive. Windows does not allow a quote, a backslash, a tab, a line break or < > : | ? * in a name. */
-const HOSTILE = ['plain.txt', 'two words.txt', 'say "hi".txt', "it's.txt", 'a;touch pwned.txt', '$(touch pwned).txt', '`touch pwned`.txt', 'a&touch pwned&.txt', '100%.txt', '%1 %L %V %*.txt', 'caret^name.txt', '-rf.txt', '--help', '$HOME', '! history', '#hash', 'ünï-名前.txt', '  padded.txt', 'tab\there.txt', 'two\nlines.txt'];
-const names = WIN ? HOSTILE.filter((n) => !/["\\\t\n]/.test(n)) : HOSTILE;
+const HOSTILE = ['plain.txt', 'two words.txt', 'say "hi".txt', "it's.txt", 'a;touch pwned.txt', '$(touch pwned).txt', '`touch pwned`.txt', 'a&touch pwned&.txt', '100%.txt', '%1 %L %V.txt', '%1 %L %V %*.txt', 'caret^name.txt', '-rf.txt', '--help', '$HOME', '! history', '#hash', 'ünï-名前.txt', '  padded.txt', 'tab\there.txt', 'two\nlines.txt'];
+const names = WIN ? HOSTILE.filter((n) => !/["\\\t\n<>:|?*]/.test(n)) : HOSTILE;
 
 function makeFiles(dir) {
   mkdirSync(dir, { recursive: true });
