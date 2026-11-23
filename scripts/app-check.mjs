@@ -5,7 +5,7 @@
 // Nothing here touches the real site: the program is given a stand-in room service (scripts/stub-rooms.mjs) through FILES_DIRECT_ORIGIN, and updates come from a stand-in
 // feed signed with a key made for this run and thrown away.
 import { spawn, spawnSync } from 'node:child_process';
-import { createHash, generateKeyPairSync } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
@@ -387,7 +387,8 @@ async function winInstall(file, label) {
   const r = run(file, installerArgs(log), { stdio: 'ignore', timeout: 300_000 });
   ok(r.status === 0, 'the installer ran silently (' + basename(file) + ')');
   const text = existsSync(log) ? readFileSync(log, 'utf8') : '';
-  ok(/non administrative install mode/i.test(text), 'the installer says it ran in the mode for the current user only: ' + (/.*non administrative install mode.*/i.exec(text)?.[0] ?? 'not found'));
+  note('the installer\'s own log, lines about the mode it ran in:\n' + (text.split(/\r?\n/).filter((l) => /administrative|privilege|install mode|elevat|per.?user|current user/i.test(l)).slice(0, 12).join('\n') || '(none; the log has ' + text.length + ' characters)'));
+  ok(/non[- ]administrative install mode|install for current user only/i.test(text), 'the installer says it ran in the mode for the current user only');
   ok(!/Running in administrative install mode|administrative install mode \(install for all users\)/i.test(text), 'it did not run as a system-wide install');
   ok(run('reg.exe', ['query', 'HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall', '/s']).stdout.indexOf('Files Direct') < 0, 'nothing was written under HKLM');
   ok(existsSync(join(APPDIR(), 'Files Direct.exe')) && existsSync(join(APPDIR(), 'files-direct.mjs')), 'the app is in ' + APPDIR() + ' (the person\'s own folder)');
@@ -399,7 +400,7 @@ async function winApp() {
   const setup = join(OUT, fileNames(version()).download['win-x64']);
   ok(statSync(setup).size > 1_000_000, 'the installer is there: ' + basename(setup) + ' (' + (statSync(setup).size / 1e6).toFixed(1) + ' MB)');
   // what a browser does to a download, and what can be read of it without a desktop
-  const sig = run('powershell.exe', ['-NoProfile', '-Command', "Set-Content -Path '" + setup + "' -Stream Zone.Identifier -Value \"[ZoneTransfer]\`r\`nZoneId=3\"; (Get-AuthenticodeSignature '" + setup + "').Status; Get-Content -Path '" + setup + "' -Stream Zone.Identifier"]);
+  const sig = run('powershell.exe', ['-NoProfile', '-Command', "Set-Content -Path '" + setup + "' -Stream Zone.Identifier -Value \"[ZoneTransfer]`r`nZoneId=3\"; (Get-AuthenticodeSignature '" + setup + "').Status; Get-Content -Path '" + setup + "' -Stream Zone.Identifier"]);
   note('Mark of the Web set as a browser does, and the installer\'s Authenticode status:\n' + sig.stdout.trim() + '\nSmartScreen\'s own dialog is not shown to a program that starts the file, so its words are NOT seen here.');
   await winInstall(setup, 'first');
   const exeAt = join(APPDIR(), 'Files Direct.exe');
@@ -425,8 +426,7 @@ async function winApp() {
   ok(noPwned(files.dir, WORK), 'no file called pwned appeared anywhere');
   stub.stop();
 
-  // Remove: the uninstaller the menu item starts
-  for (const e of trayRunning()) run('taskkill', ['/PID', e.split(' ')[1], '/F']);
+  // Remove: the uninstaller the menu item starts, with the tray program still running (the program closes it itself when the person chooses Remove in its menu; from Settings the uninstaller has to)
   const un = run(join(APPDIR(), 'unins000.exe'), ['/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART'], { stdio: 'ignore', timeout: 300_000 });
   ok(un.status === 0, 'the uninstaller ran silently');
   ok(await until('the app folder to go', () => !existsSync(APPDIR()), 90_000), 'the app folder is gone');
@@ -443,7 +443,7 @@ async function winHostile() {
     cpSync(process.execPath, join(home, 'node.exe'));
     const log = join(work, 'seen.json');
     // a stand-in engine: writes the words it was started with and what came on its standard input
-    writeFileSync(join(home, 'files-direct.mjs'), "import { writeFileSync } from 'node:fs'; const chunks = []; for await (const c of process.stdin) chunks.push(c); writeFileSync(" + JSON.stringify(log) + ", JSON.stringify({ argv: process.argv.slice(2), stdin: Buffer.concat(chunks).toString('utf8').split('\\0').filter(Boolean) }));\n");
+    writeFileSync(join(home, 'files-direct.mjs'), "import { writeFileSync } from 'node:fs'; writeFileSync(" + JSON.stringify(log + '.argv') + ", JSON.stringify(process.argv.slice(2))); const chunks = []; try { for await (const c of process.stdin) chunks.push(c); } catch {} writeFileSync(" + JSON.stringify(log) + ", JSON.stringify({ argv: process.argv.slice(2), stdin: Buffer.concat(chunks).toString('utf8').split('\\0').filter(Boolean) }));\n");
     // names Windows allows; the ones with a quote, a backslash or a line break cannot exist here
     const hostile = ['plain.txt', 'two words.txt', "it's.txt", 'a;touch pwned.txt', '$(touch pwned).txt', '`touch pwned`.txt', 'a&touch pwned&.txt', '100%.txt', '%1 %L %V.txt', 'caret^name.txt', '-rf.txt', '--help', '$HOME', '! history', '#hash', 'ünï-名前.txt', '  padded.txt', 'sp ace  double.txt'];
     const dir = join(work, 'files');
@@ -455,7 +455,8 @@ async function winHostile() {
     const sendtoLine = 'sendto ' + files.map((f) => '"' + f + '"').join(' ');
     // the command line Explorer builds: the program's path in quotes (it has a space in it), then the words; argv0 is how Node is told to write the first word as it is
     const first = run(exe, [sendtoLine], { windowsVerbatimArguments: true, argv0: '"' + exe + '"', cwd: work, stdio: 'ignore', timeout: 30_000 });
-    const seen = JSON.parse((await until('the stand-in engine (' + kind + ')', () => existsSync(log) && readFileSync(log, 'utf8'), 20_000)) ?? 'null');
+    // the careless launcher never gives the engine a standard input, so what it saw is read from the words it was started with
+    const seen = JSON.parse((await until('the stand-in engine (' + kind + ')', () => (kind === 'naive' ? existsSync(log + '.argv') && JSON.stringify({ argv: JSON.parse(readFileSync(log + '.argv', 'utf8')), stdin: [] }) : existsSync(log) && readFileSync(log, 'utf8')), 20_000)) ?? 'null');
     const expected = ['open', '--app', '--paths-stdin'];
     const exact = seen && JSON.stringify(seen.argv) === JSON.stringify(expected) && JSON.stringify(seen.stdin) === JSON.stringify(files);
     verbOk.push(exact);
@@ -504,14 +505,14 @@ async function winUpdate() {
   await refuses('a list signed with another key', { version: '99.0.0', name: newName, bytes: newBytes, key, sign: other }, 'update_signature');
   await refuses('an older version', { version: '0.0.1', name: fileNames('0.0.1').update['win-x64'], bytes: newBytes, key }, 'update_older');
   const site = await feedServer({ version: '99.0.0', name: newName, bytes: newBytes, key });
-  for (const e of trayRunning()) run('taskkill', ['/PID', e.split(' ')[1], '/F']);
+  for (const e of trayRunning()) run('taskkill', ['/PID', e.split(' ').pop(), '/F']);
   const shell = spawn(join(APPDIR(), 'Files Direct.exe'), ['--update-now'], { env: { ...process.env, FILES_DIRECT_ORIGIN: site.origin }, stdio: 'ignore', detached: true });
   shell.unref();
   ok(await until('the new version to be installed', () => exeVersion() === '99.0.0', 150_000), 'the update from our (stand-in) address was installed: Files Direct.exe says it is 99.0.0');
   ok(await until('the tray program', () => trayRunning().length > 0, 60_000), 'the tray program is running again, as the new version');
   ok(run(node, [engine, 'version']).stdout.trim() === '99.0.0', 'the new engine says it is 99.0.0');
   site.stop();
-  for (const e of trayRunning()) run('taskkill', ['/PID', e.split(' ')[1], '/F']);
+  for (const e of trayRunning()) run('taskkill', ['/PID', e.split(' ').pop(), '/F']);
   run(join(APPDIR(), 'unins000.exe'), ['/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART'], { stdio: 'ignore', timeout: 300_000 });
   await until('the app folder to go', () => !existsSync(APPDIR()), 90_000);
   sameListing(before, listing(), 'after the update test and uninstalling');

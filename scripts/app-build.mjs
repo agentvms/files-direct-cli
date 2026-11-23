@@ -7,7 +7,7 @@
 // checked against a fixed SHA-256), and the one native file the connection library needs for this system. Nothing is downloaded but Node.
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { deflateSync } from 'node:zlib';
 import { build } from 'esbuild';
