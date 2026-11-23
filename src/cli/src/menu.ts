@@ -12,6 +12,10 @@ export interface Launch {
   node: string;
   /** The program's own file, as an absolute path. */
   script: string;
+  /** The double-click app (files-direct-34): the entries say so (--app), and the room says it comes from the app. */
+  app?: boolean;
+  /** Windows, the app: the launcher program (no console window) every entry starts. It hands the chosen paths to the engine on its standard input, so no path is ever pasted into a command line. */
+  launcher?: string;
 }
 
 export const MENU_TEXT = 'Send with Files Direct';
@@ -37,7 +41,7 @@ export function quickActionScript(l: Launch): string {
     `  /usr/bin/osascript -e ${shellQuote(`display notification "${NOTE_GONE}" with title "Files Direct"`)} >/dev/null 2>&1`,
     '  exit 0',
     'fi',
-    '"$node" "$script" open -- "$@" >/dev/null 2>&1 &',
+    `"$node" "$script" open${l.app ? ' --app' : ''} -- "$@" >/dev/null 2>&1 &`,
     '',
   ].join('\n');
 }
@@ -50,7 +54,7 @@ export function windowsQuote(s: string): string {
 
 function windowsPaths(l: Launch): [string, string] {
   // Explorer changes %1, %L, %V and the like wherever it finds them in the command, so a program path with a % in it cannot be written there
-  for (const p of [l.node, l.script]) if (p.includes('%')) throw new Error('The program is in a folder with a % in its name. Move it to a folder without one, then run menu install again.');
+  for (const p of [l.node, l.script, ...(l.launcher ? [l.launcher] : [])]) if (p.includes('%')) throw new Error('The program is in a folder with a % in its name. Move it to a folder without one, then run menu install again.');
   return [windowsQuote(l.node), windowsQuote(l.script)];
 }
 
@@ -61,13 +65,15 @@ function windowsPaths(l: Launch): [string, string] {
  */
 export function windowsVerbCommand(l: Launch): string {
   const [node, script] = windowsPaths(l);
-  return `${node} ${script} open --detach --gather -- "%1"`;
+  if (l.launcher) return `${windowsQuote(l.launcher)} verb "%1"`;
+  return `${node} ${script} open${l.app ? ' --app' : ''} --detach --gather -- "%1"`;
 }
 
 /** The arguments of the Send to shortcut (its target is node itself): Explorer adds the chosen files after them, each as its own quoted argument. */
 export function windowsSendToArguments(l: Launch): string {
   const [, script] = windowsPaths(l);
-  return `${script} open --detach --`;
+  if (l.launcher) return 'sendto';
+  return `${script} open${l.app ? ' --app' : ''} --detach --`;
 }
 
 // ---- the Mac workflow ---------------------------------------------------------------------------------------------------------------------
@@ -329,6 +335,8 @@ function kind(fx: MenuEffects): 'mac' | 'windows' {
 /** Puts the entry in. Run again, it replaces what it put before. Returns what was written, in words. */
 export async function installMenu(l: Launch, fx: MenuEffects): Promise<string[]> {
   if (kind(fx) === 'mac') {
+    // the app run from a download or a disk image is not where it will stay (macOS runs it from a copy that goes away): the entry would point at nothing
+    if (l.app && (l.script.includes('/AppTranslocation/') || l.script.startsWith('/Volumes/'))) throw new Error('Files Direct is running from a download or a disk image. Drag it into your Applications folder (or any folder of your own), open it from there, then add the menu entry.');
     const dir = macDir(fx);
     await fx.removePath(dir);
     await fx.writeFile(`${dir}/Contents/Info.plist`, macInfoPlist());
@@ -339,7 +347,7 @@ export async function installMenu(l: Launch, fx: MenuEffects): Promise<string[]>
   const text = windowsRegText(l); // refuses a program path Windows would change, before anything is written
   const args = windowsSendToArguments(l);
   await fx.regImport(text);
-  await fx.shortcut(sendToPath(fx), l.node, args);
+  await fx.shortcut(sendToPath(fx), l.launcher ?? l.node, args);
   return [`Added "${MENU_TEXT}" to the menu for files and for folders (in the registry, for you only).`, `Added "Files Direct" to Send to.`];
 }
 

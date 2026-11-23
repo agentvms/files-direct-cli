@@ -95,7 +95,7 @@ export const recordText = (r: RoomRecord) => recordLines(r).join('\n');
 
 /** "Chrome on macOS": the browser and system of one device, for the count by browser pair. */
 export const deviceLabel = (d: Device | null): string =>
-  d ? (d.kind === 'program' ? 'command-line program' : d.kind === 'desktop' ? 'Files Direct window' : d.browser === 'unknown' ? 'unknown browser' : d.browser) + ' on ' + (d.system === 'unknown' ? 'unknown system' : d.system) : 'unknown device';
+  d ? (d.kind === 'program' ? 'command-line program' : d.kind === 'desktop' ? 'Files Direct window' : d.kind === 'app' ? 'Files Direct app' : d.browser === 'unknown' ? 'unknown browser' : d.browser) + ' on ' + (d.system === 'unknown' ? 'unknown system' : d.system) : 'unknown device';
 
 /** The two devices of a room as one label, in a fixed order so the same pair always reads the same. */
 export const pairLabel = (a: Device | null, b: Device | null): string => [deviceLabel(a), deviceLabel(b)].sort().join(' + ');

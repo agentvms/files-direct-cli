@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { MAC_WORKFLOW, MENU_TEXT, WIN_KEYS, WIN_SENDTO, installMenu, macInfoPlist, macWorkflow, menuStatus, removeMenu, windowsRegText, type Launch, type MenuEffects } from '../../src/cli/src/menu.ts';
+import { MAC_WORKFLOW, MENU_TEXT, WIN_KEYS, WIN_SENDTO, installMenu, macInfoPlist, macWorkflow, menuStatus, removeMenu, windowsRegText, windowsSendToArguments, windowsVerbCommand, type Launch, type MenuEffects } from '../../src/cli/src/menu.ts';
 
 // files-direct-30, done-when 2: what menu install writes, and that menu remove takes out exactly that and nothing else.
 // The machine here is made up: a table of files and a table of registry keys, with a few things in them that are not ours.
@@ -158,6 +158,57 @@ describe('on any other system', () => {
     const before = m.snapshot();
     await expect(installMenu(LAUNCH, m.fx)).rejects.toThrow(/Mac or a Windows/);
     await expect(removeMenu(m.fx)).rejects.toThrow(/Mac or a Windows/);
+    expect(m.snapshot()).toBe(before);
+  });
+});
+
+// files-direct-34: the entries the double-click app writes. On a Mac the Quick Action runs the app's own Node and engine and says it is the app (--app); on Windows
+// every entry starts the app's own launcher (a program with no console window), which hands the chosen paths to the engine on its standard input.
+describe('for the double-click app', () => {
+  const APP: Launch = { node: '/Users/ann/Applications/Files Direct.app/Contents/Resources/node', script: '/Users/ann/Applications/Files Direct.app/Contents/Resources/files-direct.mjs', app: true };
+  const WAPP: Launch = { node: 'C:\\Users\\Ann\\AppData\\Local\\Programs\\Files Direct\\node.exe', script: 'C:\\Users\\Ann\\AppData\\Local\\Programs\\Files Direct\\files-direct.mjs', app: true, launcher: 'C:\\Users\\Ann\\AppData\\Local\\Programs\\Files Direct\\Files Direct.exe' };
+
+  it('on a Mac: the Quick Action runs the app\'s own engine and tells it that it is the app, files after "--"', () => {
+    const wf = macWorkflow(APP);
+    expect(wf).toContain('open --app -- &quot;$@&quot;');
+    expect(wf).toContain("node='/Users/ann/Applications/Files Direct.app/Contents/Resources/node'");
+    expect(macWorkflow(LAUNCH)).not.toContain('--app');
+  });
+
+  it('on a Mac: refuses to write an entry from a place the app will not stay in (a disk image, or the temporary copy macOS makes of a download)', async () => {
+    const m = machine('darwin');
+    const before = m.snapshot();
+    for (const script of ['/Volumes/Files Direct/Files Direct.app/Contents/Resources/files-direct.mjs', '/private/var/folders/x/AppTranslocation/9F/d/Files Direct.app/Contents/Resources/files-direct.mjs']) {
+      await expect(installMenu({ ...APP, node: script.replace('files-direct.mjs', 'node'), script }, m.fx)).rejects.toThrow(/Applications folder/);
+    }
+    expect(m.snapshot()).toBe(before);
+    // the command-line program is not held to it: Node may live on any disk
+    await expect(installMenu({ node: '/Volumes/Tools/node', script: '/Volumes/Tools/files-direct.mjs' }, m.fx)).resolves.toBeTruthy();
+  });
+
+  it('on Windows: both keys start the launcher with one quoted %1, and Send to starts the launcher itself', async () => {
+    const reg = windowsRegText(WAPP);
+    expect(windowsVerbCommand(WAPP)).toBe('"C:\\Users\\Ann\\AppData\\Local\\Programs\\Files Direct\\Files Direct.exe" verb "%1"');
+    expect(reg.match(/verb \\"%1\\"/g)).toHaveLength(2);
+    expect(reg).not.toContain('node.exe');
+    expect(windowsSendToArguments(WAPP)).toBe('sendto');
+    const m = machine('win32');
+    await installMenu(WAPP, m.fx);
+    expect(m.files.get('C:\\Users\\Ann\\AppData\\Roaming\\Microsoft\\Windows\\SendTo\\' + WIN_SENDTO)).toBe('shortcut ' + WAPP.launcher + ' sendto');
+  });
+
+  it('refuses a launcher path Explorer would change (a % in it) before anything is written', async () => {
+    const m = machine('win32');
+    const before = m.snapshot();
+    await expect(installMenu({ ...WAPP, launcher: 'C:\\100%\\Files Direct.exe' }, m.fx)).rejects.toThrow(/%/);
+    expect(m.snapshot()).toBe(before);
+  });
+
+  it('removes what it added, the same as for the program', async () => {
+    const m = machine('win32');
+    const before = m.snapshot();
+    await installMenu(WAPP, m.fx);
+    await removeMenu(m.fx);
     expect(m.snapshot()).toBe(before);
   });
 });

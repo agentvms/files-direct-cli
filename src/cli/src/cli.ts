@@ -1,6 +1,6 @@
 import { parseArgs } from 'node:util';
 import { spawn } from 'node:child_process';
-import { homedir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { cleanNote } from '../../shared/ask.ts';
 import { formatCode } from '../../shared/code.ts';
@@ -13,7 +13,9 @@ import { type GatherOptions, gather } from './gather.ts';
 import { type Launch, type MenuEffects, MenuUnsupported, installMenu, menuStatus, removeMenu } from './menu.ts';
 import { nodeEffects } from './menu-node.ts';
 import { Desk, serveDesk } from './window.ts';
-import { VERSION, originFrom, roomEnv } from './config.ts';
+import { BUILT_UPDATE_KEY, VERSION, installLine, originFrom, roomEnv } from './config.ts';
+import { type AppInfo, readAppInfo, removeApp, startInstaller, startSwap, stageMacUpdate } from './app-install.ts';
+import { UpdateRefused, checkForUpdate, downloadUpdate, refusalText } from './update.ts';
 import { collect } from './fs-source.ts';
 import { etaText, size } from './format.ts';
 import { terminalQr } from './qr.ts';
@@ -43,6 +45,10 @@ export interface Io {
   windowIdleMs?: number;
   /** Starts the real run for `open --detach` (a test brings its own). */
   spawn?: typeof spawn;
+  /** The paths the app's launcher hands over on the standard input for `open --paths-stdin`, separated by NUL bytes. Without it: this process's own standard input. */
+  stdin?: () => Promise<Uint8Array>;
+  /** What a test changes about updates: the site's answers, the key, the kind of app it is, where files go. */
+  update?: { fetch?: typeof fetch; key?: string; info?: AppInfo | null; dir?: string; platform?: string };
 }
 
 export const USAGE = `Files Direct: send and receive files and folders from a terminal or a script, with no browser.
@@ -53,6 +59,8 @@ Usage:
   files-direct ask [--note <text>] [--to <folder>] [--timeout <minutes>] [--max-size <size>] [--max-files <number>] [--allow-code] [--password <word>] [--json]
   files-direct open [<file or folder>...] [--to <folder>] [--no-window]   open the Files Direct window (what the right-click menu runs)
   files-direct menu install | remove | status      add or take out "Send with Files Direct" in Finder (Mac) or File Explorer (Windows)
+  files-direct update check | install [--json]      for the Files Direct app: look for a newer version, or install it (checked against our own key first)
+  files-direct app remove                           for the Files Direct app on a Mac: take out its menu entry and every folder it made
   files-direct mcp [--allow <folder>]...        run as a local MCP server for an assistant (talks over stdin and stdout)
   files-direct version
 
@@ -144,7 +152,7 @@ export async function runCli(argv: string[], io: Io): Promise<number> {
     io.out(VERSION);
     return 0;
   }
-  if (command !== 'send' && command !== 'receive' && command !== 'ask' && command !== 'open' && command !== 'menu') {
+  if (command !== 'send' && command !== 'receive' && command !== 'ask' && command !== 'open' && command !== 'menu' && command !== 'update' && command !== 'app') {
     io.err(`Unknown command "${command}". Run files-direct help.`);
     return 2;
   }
@@ -169,6 +177,10 @@ export async function runCli(argv: string[], io: Io): Promise<number> {
         detach: { type: 'boolean' },
         'no-window': { type: 'boolean' },
         'no-qr': { type: 'boolean' },
+        app: { type: 'boolean' },
+        'paths-stdin': { type: 'boolean' },
+        launcher: { type: 'string' },
+        'wait-for': { type: 'string' },
       },
     });
   } catch (e) {
@@ -182,10 +194,12 @@ export async function runCli(argv: string[], io: Io): Promise<number> {
     else io.err(text + ' Run files-direct help.');
     return 2;
   };
-  if (command === 'menu') return runMenu(args.positionals, io);
+  if (command === 'menu') return runMenu(args.positionals, io, { app: Boolean(v.app), launcher: v.launcher });
+  if (command === 'app') return runApp(args.positionals, io);
   if (command === 'open' && v.detach) return detach(rest, io);
   const origin = originFrom(v.site, io.env);
   if (!origin) return usage('No site address: pass --site <address> or set FILES_DIRECT_ORIGIN.');
+  if (command === 'update') return runUpdate(args.positionals, { json, waitFor: v['wait-for'] }, io, origin);
   const password = v.password ?? io.env.FILES_DIRECT_PASSWORD;
   if (password !== undefined && (password.length === 0 || password.length > PASSWORD_MAX_CHARS)) return usage(`The password must be 1 to ${PASSWORD_MAX_CHARS} characters.`);
   const lane = io.env.FD_TEST_LANE_TOKEN; // a check on the live site marks its rooms as tests (docs/TEST-LANE.md)
@@ -209,7 +223,7 @@ export async function runCli(argv: string[], io: Io): Promise<number> {
   };
 
   installBrowserParts();
-  if (command === 'open') return runOpen(args.positionals, { gather: Boolean(v.gather), noWindow: Boolean(v['no-window']), to: v.to, json }, io, await roomEnv(origin, headers, true), usage);
+  if (command === 'open') return runOpen(args.positionals, { gather: Boolean(v.gather), noWindow: Boolean(v['no-window']), to: v.to, json, pathsStdin: Boolean(v['paths-stdin']) }, io, await roomEnv(origin, headers, true, Boolean(v.app)), usage);
   const env = await roomEnv(origin, headers);
   let run;
   if (command === 'send') {
@@ -264,7 +278,7 @@ export async function runCli(argv: string[], io: Io): Promise<number> {
 
 const MENU_USAGE = 'Say what to do: menu install, menu remove or menu status.';
 
-async function runMenu(words: string[], io: Io): Promise<number> {
+async function runMenu(words: string[], io: Io, o: { app: boolean; launcher?: string } = { app: false }): Promise<number> {
   const [what, ...extra] = words;
   if ((what !== 'install' && what !== 'remove' && what !== 'status') || extra.length > 0) {
     io.err(MENU_USAGE + ' Run files-direct help.');
@@ -286,7 +300,11 @@ async function runMenu(words: string[], io: Io): Promise<number> {
       io.err('This program does not know where it is installed, so it cannot write a menu entry.');
       return 1;
     }
-    for (const l of await installMenu(io.program, fx)) io.out(l);
+    if (o.launcher !== undefined && !/^(?:[A-Za-z]:\\|\/)/.test(o.launcher)) {
+      io.err('--launcher takes the full path of the Files Direct launcher program.');
+      return 2;
+    }
+    for (const l of await installMenu({ ...io.program, ...(o.app ? { app: true } : {}), ...(o.launcher === undefined ? {} : { launcher: o.launcher }) }, fx)) io.out(l);
     io.out(fx.platform === 'darwin' ? 'In Finder: right-click files or a folder, then choose Quick Actions, then "Send with Files Direct".' : 'In File Explorer: right-click files or a folder. On Windows 11 the entry is under "Show more options". Or choose Send to, then "Files Direct".');
     io.out('Before you uninstall this program, run: files-direct menu remove');
     return 0;
@@ -298,15 +316,22 @@ async function runMenu(words: string[], io: Io): Promise<number> {
 
 async function runOpen(
   given: string[],
-  o: { gather: boolean; noWindow: boolean; to?: string; json: boolean },
+  o: { gather: boolean; noWindow: boolean; to?: string; json: boolean; pathsStdin?: boolean },
   io: Io,
   env: Awaited<ReturnType<typeof roomEnv>>,
   usage: (text: string) => number,
 ): Promise<number> {
   let paths = given;
+  if (o.pathsStdin) {
+    // the Windows launcher hands the chosen paths over here, one after another, each ended by a NUL byte (a path cannot hold one): nothing is ever pasted into a command line
+    if (given.length > 0) return usage('--paths-stdin takes the paths on the standard input, not on the command line.');
+    const bytes = await (io.stdin ?? readStdin)();
+    paths = Buffer.from(bytes).toString('utf8').split('\0').filter((p) => p.length > 0);
+    if (paths.length === 0) return usage('No path came on the standard input.');
+  }
   if (o.gather) {
-    if (given.length !== 1) return usage('--gather takes the one file or folder this program was started for.');
-    const all = await gather(resolve(given[0]!), io.gather);
+    if (paths.length !== 1) return usage('--gather takes the one file or folder this program was started for.');
+    const all = await gather(resolve(paths[0]!), io.gather);
     if (all === null) return 0; // handed to the program that leads this right-click
     paths = all;
   }
@@ -361,4 +386,73 @@ function detach(rest: string[], io: Io): number {
   child.on('error', () => {});
   child.unref();
   return 0;
+}
+
+async function readStdin(): Promise<Uint8Array> {
+  const chunks: Buffer[] = [];
+  for await (const c of process.stdin) chunks.push(c as Buffer);
+  return Buffer.concat(chunks);
+}
+
+/** "app remove": for the Mac app, which has no uninstaller of its own. Takes out the Quick Action and every folder and file the app made. */
+async function runApp(words: string[], io: Io): Promise<number> {
+  if (words[0] !== 'remove' || words.length !== 1) {
+    io.err('Say what to do: app remove. Run files-direct help.');
+    return 2;
+  }
+  const fx = io.menu ?? nodeEffects(io.env);
+  try {
+    const gone = await removeApp(fx, io.update?.dir ? [io.update.dir] : []);
+    for (const l of gone.length ? gone : ['There was nothing to remove.']) io.out(l);
+    return 0;
+  } catch (e) {
+    io.err(e instanceof Error ? e.message : String(e));
+    return 1;
+  }
+}
+
+/** "update check" and "update install", for the Files Direct app only. The rules are in cli/src/update.ts. */
+async function runUpdate(words: string[], o: { json: boolean; waitFor?: string }, io: Io, origin: string): Promise<number> {
+  const what = words[0];
+  const say = (e: Record<string, unknown>, text: string) => io.out(o.json ? JSON.stringify({ event: 'update', ...e, at: new Date().toISOString() }) : text);
+  const fail = (reason: string, text: string) => {
+    if (o.json) io.out(JSON.stringify({ event: 'failed', reason, message: text, at: new Date().toISOString() }));
+    else io.err(text);
+    return 1;
+  };
+  if ((what !== 'check' && what !== 'install') || words.length !== 1) {
+    io.err('Say what to do: update check or update install. Run files-direct help.');
+    return 2;
+  }
+  const info = io.update && 'info' in io.update ? io.update.info : io.program ? readAppInfo(io.program.script) : null;
+  if (!info) return fail('update_not_app', 'Only the Files Direct app updates itself. This program is updated with: ' + installLine(origin));
+  try {
+    const found = await checkForUpdate({ origin, current: VERSION, target: info.target, key: io.update?.key ?? BUILT_UPDATE_KEY, fetch: io.update?.fetch });
+    if (found.state === 'current') {
+      say({ state: 'current', version: found.version }, 'Files Direct ' + found.version + ' is the newest version.');
+      return 0;
+    }
+    if (what === 'check') {
+      say({ state: 'available', version: found.version, size: found.file.size }, 'Files Direct ' + found.version + ' is ready to install (' + size(found.file.size) + ').');
+      return 0;
+    }
+    say({ state: 'downloading', version: found.version, size: found.file.size }, 'Downloading Files Direct ' + found.version + '…');
+    const dir = io.update?.dir ?? join(tmpdir(), 'files-direct-update');
+    const file = await downloadUpdate({ origin, file: found.file, dir, fetch: io.update?.fetch });
+    const platform = io.update?.platform ?? process.platform;
+    if (platform === 'win32') {
+      startInstaller(file, io.spawn);
+    } else {
+      if (!info.bundle) return fail('update_not_app', 'This copy of the app does not know where it is installed.');
+      const pid = Number(o.waitFor);
+      if (!Number.isInteger(pid) || pid < 1) return fail('usage', 'update install needs --wait-for <the number of the menu-bar program>, which the swap waits for.');
+      const staged = await stageMacUpdate({ archive: file, bundle: info.bundle, feed: found });
+      startSwap({ pid, bundle: info.bundle, newBundle: staged.bundle, stage: staged.stage, spawnFn: io.spawn });
+    }
+    say({ state: 'restarting', version: found.version }, 'Files Direct ' + found.version + ' is checked and will start in a moment.');
+    return 0;
+  } catch (e) {
+    if (e instanceof UpdateRefused) return fail('update_' + e.reason, refusalText(e));
+    return fail('update_failed', e instanceof Error ? e.message : 'The update did not work.');
+  }
 }

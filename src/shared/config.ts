@@ -5,6 +5,14 @@ export const PUBLIC_REPO_URL = 'https://github.com/agentvms/files-direct-cli';
 /** Where a version's package file is attached to its release in the public repository (the release workflow names it so). */
 export const publicReleaseTarball = (version: string): string => `${PUBLIC_REPO_URL}/releases/download/v${version}/files-direct-${version}.tgz`;
 
+/**
+ * The public half of the key that signs the double-click app's list of updates (files-direct-34): the raw 32 bytes of an Ed25519 key, in base64.
+ * Made by the Factory lead; the secret half is only ever a secret (FD_UPDATE_SIGNING_KEY) of the public repository's release workflow. With an empty key a copy of the app never updates itself.
+ */
+export const UPDATE_PUBLIC_KEY = 'DWKN0R/GF/YjYe5KKyJkwfD7qJTk6NG0QCaM1ILp/2g=';
+/** Where the app's files are attached to a release in the public repository: the Worker streams them from here under /desktop/ and keeps nothing. */
+export const publicReleaseAsset = (name: string): string => `${PUBLIC_REPO_URL}/releases/latest/download/${name}`;
+
 /** Cloudflare's public addresses for finding a direct route (3478 and 443 for networks that block 3478). */
 export const ICE_URLS = ['stun:stun.cloudflare.com:3478', 'stun:stun.cloudflare.com:443'];
 

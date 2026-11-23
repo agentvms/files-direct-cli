@@ -3,9 +3,9 @@
  * Read from the browser's own text. Never an address, a name, a link, a code or a file name: every value is one of a short list or a small number.
  * The Worker passes it to the other side after cleaning it with the same function (so a page cannot pass anything else along).
  */
-export const DEVICE_KINDS = ['phone', 'tablet', 'computer', 'program', 'desktop', 'unknown'] as const;
+export const DEVICE_KINDS = ['phone', 'tablet', 'computer', 'program', 'desktop', 'app', 'unknown'] as const;
 export const SYSTEMS = ['Android', 'iOS', 'macOS', 'Windows', 'Linux', 'ChromeOS', 'unknown'] as const;
-/** "none" is only for a program (the command-line program of files-direct-27) and for the Files Direct window of files-direct-30: neither is a browser. */
+/** "none" is only for a program (the command-line program of files-direct-27), for the Files Direct window of files-direct-30 and for the double-click app of files-direct-34: none of them is a browser. */
 export const BROWSERS = ['Chrome', 'Edge', 'Firefox', 'Safari', 'none', 'unknown'] as const;
 /** How the second device came in: the link, the QR code (the link with a marker outside its secret) or the nine-digit code. */
 export const JOINED = ['link', 'qr', 'code'] as const;
@@ -27,13 +27,18 @@ export function cleanDevice(raw: unknown): Device | null {
   const r = raw as Record<string, unknown>;
   const v = typeof r.version === 'number' && Number.isInteger(r.version) && r.version >= 0 && r.version <= 999 ? r.version : 0;
   const kind = pick(DEVICE_KINDS, r.kind, 'unknown');
-  const browser = kind === 'program' || kind === 'desktop' ? 'none' : pick(BROWSERS, r.browser, 'unknown') === 'none' ? 'unknown' : pick(BROWSERS, r.browser, 'unknown');
+  const browser = kind === 'program' || kind === 'desktop' || kind === 'app' ? 'none' : pick(BROWSERS, r.browser, 'unknown') === 'none' ? 'unknown' : pick(BROWSERS, r.browser, 'unknown');
   return { kind, system: pick(SYSTEMS, r.system, 'unknown'), browser, version: v };
 }
 
 /** What the Files Direct window (the program, opened from a right-click or on its own) says about itself: the system and the major version. No browser: the window is shown by one, but it is the program that talks. */
 export function desktopDevice(system: Device['system'], version: number): Device {
   return cleanDevice({ kind: 'desktop', system, version })!;
+}
+
+/** What the double-click Files Direct app (menu bar on a Mac, tray on Windows) says about itself: the system and the major version. No browser. */
+export function appDevice(system: Device['system'], version: number): Device {
+  return cleanDevice({ kind: 'app', system, version })!;
 }
 
 /** What a command-line program says about itself: the system it runs on and its major version (0 to 999). No browser. */
@@ -63,6 +68,7 @@ export function deviceLabel(d: Device | null): string {
   if (!d || d.kind === 'unknown') return 'another device';
   if (d.kind === 'program') return 'a command-line program';
   if (d.kind === 'desktop') return d.system === 'macOS' ? 'the Files Direct window on a Mac' : d.system === 'Windows' ? 'the Files Direct window on a Windows computer' : d.system === 'Linux' ? 'the Files Direct window on a Linux computer' : 'the Files Direct window';
+  if (d.kind === 'app') return d.system === 'macOS' ? 'the Files Direct app on a Mac' : d.system === 'Windows' ? 'the Files Direct app on a Windows computer' : 'the Files Direct app';
   const s = d.system;
   if (d.kind === 'phone') return s === 'Android' ? 'an Android phone' : s === 'iOS' ? 'an iPhone' : 'a phone';
   if (d.kind === 'tablet') return s === 'Android' ? 'an Android tablet' : s === 'iOS' ? 'an iPad' : 'a tablet';

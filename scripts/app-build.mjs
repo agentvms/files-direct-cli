@@ -1,12 +1,17 @@
 // The Files Direct app, built for one system (files-direct-34). Run by .github/workflows/desktop-app.yml on a GitHub-hosted machine of that system:
-//   node scripts/app-build.mjs <mac-arm64 | mac-x64 | win-x64> [size]
+//   node scripts/app-build.mjs <mac-arm64 | mac-x64 | win-x64> [size | build]
+// size: measures the bare app in every way it could be packed. build: makes the app and the files a person downloads, in app-out/ (the Mac app is signed ad hoc, which is
+// not Apple's signing; on Windows it also leaves the launcher in a careless form, for the check that shows a hostile name breaks it).
+// Environment: FD_APP_VERSION (the version to build as; the checks build a newer one to try an update), FD_UPDATE_PUBLIC_KEY (a throwaway key for a check; the real key is in shared/config.ts).
 // The app is the program's own engine (one file built from the same source as the command-line program), the Node it runs on (the official build,
 // checked against a fixed SHA-256), and the one native file the connection library needs for this system. Nothing is downloaded but Node.
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { deflateSync } from 'node:zlib';
 import { build } from 'esbuild';
+import { fileNames } from './app-feed.mjs';
 
 export const NODE_VERSION = '22.23.5';
 /** Official Node archives (https://nodejs.org/dist/v<version>/SHASUMS256.txt) and the SHA-256 each one must have. */
@@ -64,10 +69,10 @@ export async function buildEngine(outfile) {
     legalComments: 'none',
     external: ['node-datachannel', 'node-datachannel/polyfill'],
     banner: { js: "import { createRequire as __fdRequire } from 'node:module'; const require = __fdRequire(import.meta.url);" },
-    define: { __FD_VERSION__: JSON.stringify(pkg.version), __FD_ORIGIN__: JSON.stringify(origin) },
+    define: { __FD_VERSION__: JSON.stringify(process.env.FD_APP_VERSION ?? pkg.version), __FD_ORIGIN__: JSON.stringify(origin), ...(process.env.FD_UPDATE_PUBLIC_KEY ? { __FD_UPDATE_KEY__: JSON.stringify(process.env.FD_UPDATE_PUBLIC_KEY) } : {}) },
     logLevel: 'warning',
   });
-  return { version: pkg.version, origin };
+  return { version: process.env.FD_APP_VERSION ?? pkg.version, origin };
 }
 
 /** node_modules for the engine: the connection library, the one native file of this system, and the one package the loader needs. */
@@ -80,6 +85,179 @@ export function copyNative(target, into) {
   keep(from('node-datachannel', 'LICENSE'), join(into, 'node_modules', 'node-datachannel', 'LICENSE'));
   keep(from('detect-libc'), join(into, 'node_modules', 'detect-libc'));
   keep(from(...t.native.split('/')), join(into, 'node_modules', ...t.native.split('/')));
+}
+
+// ---- icons: drawn here, no pictures in the repository for them ---------------------------------------------------------------------------
+
+const BG = [10, 108, 92];
+const crcTable = Array.from({ length: 256 }, (_, n) => {
+  let c = n;
+  for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+  return c >>> 0;
+});
+const crc32 = (buf) => {
+  let c = 0xffffffff;
+  for (const b of buf) c = crcTable[(c ^ b) & 0xff] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+};
+const chunk = (type, data) => {
+  const out = Buffer.alloc(12 + data.length);
+  out.writeUInt32BE(data.length, 0);
+  out.write(type, 4, 'ascii');
+  data.copy(out, 8);
+  out.writeUInt32BE(crc32(out.subarray(4, 8 + data.length)), 8 + data.length);
+  return out;
+};
+/** A white arrow dropping into a tray, on the accent colour: the same drawing as the web app's icons. */
+const arrow = (u, v) =>
+  (u > 0.44 && u < 0.56 && v > 0.2 && v < 0.55) || (v >= 0.5 && v < 0.7 && Math.abs(u - 0.5) < (0.7 - v) * 1.1) || (v > 0.74 && v < 0.82 && u > 0.22 && u < 0.78) || (u > 0.22 && u < 0.3 && v > 0.62 && v < 0.82) || (u > 0.7 && u < 0.78 && v > 0.62 && v < 0.82);
+export function iconPng(size) {
+  const SS = size >= 256 ? 2 : 4;
+  const rows = [];
+  for (let py = 0; py < size; py++) {
+    const row = Buffer.alloc(1 + size * 3);
+    for (let px = 0; px < size; px++) {
+      let hit = 0;
+      for (let sy = 0; sy < SS; sy++) for (let sx = 0; sx < SS; sx++) if (arrow((px + (sx + 0.5) / SS) / size, (py + (sy + 0.5) / SS) / size)) hit++;
+      const a = hit / (SS * SS);
+      for (let c = 0; c < 3; c++) row[1 + px * 3 + c] = Math.round(BG[c] * (1 - a) + 255 * a);
+    }
+    rows.push(row);
+  }
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(size, 0);
+  ihdr.writeUInt32BE(size, 4);
+  ihdr[8] = 8;
+  ihdr[9] = 2;
+  return Buffer.concat([Buffer.from('89504e470d0a1a0a', 'hex'), chunk('IHDR', ihdr), chunk('IDAT', deflateSync(Buffer.concat(rows), { level: 9 })), chunk('IEND', Buffer.alloc(0))]);
+}
+/** A Windows .ico holding PNG pictures. */
+export function iconIco(sizes = [16, 32, 48, 256]) {
+  const pngs = sizes.map(iconPng);
+  const head = Buffer.alloc(6 + 16 * sizes.length);
+  head.writeUInt16LE(1, 2);
+  head.writeUInt16LE(sizes.length, 4);
+  let offset = head.length;
+  sizes.forEach((s, i) => {
+    const e = 6 + 16 * i;
+    head[e] = s >= 256 ? 0 : s;
+    head[e + 1] = s >= 256 ? 0 : s;
+    head.writeUInt16LE(1, e + 4);
+    head.writeUInt16LE(32, e + 6);
+    head.writeUInt32LE(pngs[i].length, e + 8);
+    head.writeUInt32LE(offset, e + 12);
+    offset += pngs[i].length;
+  });
+  return Buffer.concat([head, ...pngs]);
+}
+
+// ---- the Mac app -------------------------------------------------------------------------------------------------------------------------
+
+export const BUNDLE_ID = 'com.tnyforge.filesdirect';
+const infoPlist = (version) => '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0">\n<dict>\n' +
+  [['CFBundleName', 'Files Direct'], ['CFBundleDisplayName', 'Files Direct'], ['CFBundleIdentifier', BUNDLE_ID], ['CFBundleExecutable', 'FilesDirect'], ['CFBundlePackageType', 'APPL'], ['CFBundleShortVersionString', version], ['CFBundleVersion', version], ['CFBundleIconFile', 'AppIcon'], ['LSMinimumSystemVersion', '13.5']]
+    .map(([k, v]) => '\t<key>' + k + '</key>\n\t<string>' + v + '</string>').join('\n') +
+  '\n\t<key>LSUIElement</key>\n\t<true/>\n\t<key>NSHighResolutionCapable</key>\n\t<true/>\n</dict>\n</plist>\n';
+
+function macIcns(work) {
+  const set = join(work, 'AppIcon.iconset');
+  rmSync(set, { recursive: true, force: true });
+  mkdirSync(set, { recursive: true });
+  for (const [name, px] of [['icon_16x16', 16], ['icon_16x16@2x', 32], ['icon_32x32', 32], ['icon_32x32@2x', 64], ['icon_128x128', 128], ['icon_128x128@2x', 256], ['icon_256x256', 256], ['icon_256x256@2x', 512], ['icon_512x512', 512], ['icon_512x512@2x', 1024]]) writeFileSync(join(set, name + '.png'), iconPng(px));
+  const out = join(work, 'AppIcon.icns');
+  sh('iconutil', ['-c', 'icns', '-o', out, set]);
+  return out;
+}
+
+/** Builds the .app, signed ad hoc (the free kind of signature: it makes the bundle whole, and Apple does not vouch for it). Returns its folder. */
+function buildMacApp(target, stage, work, info) {
+  const t = TARGETS[target];
+  const app = join(stage, 'Files Direct.app');
+  const res = join(app, 'Contents', 'Resources');
+  const exe = join(app, 'Contents', 'MacOS', 'FilesDirect');
+  mkdirSync(join(app, 'Contents', 'MacOS'), { recursive: true });
+  sh('swiftc', ['-O', '-o', exe, join('app', 'mac', 'main.swift'), '-framework', 'AppKit']);
+  cpSync(macIcns(work), join(res, 'AppIcon.icns'));
+  writeFileSync(join(app, 'Contents', 'Info.plist'), infoPlist(info.version));
+  writeFileSync(join(app, 'Contents', 'PkgInfo'), 'APPL????');
+  chmodSync(join(res, 'node'), 0o755);
+  // every program inside is signed ad hoc, then the bundle (which seals them)
+  const natives = [join(res, 'node'), join(res, 'node_modules', ...t.native.split('/'), 'node_datachannel.node'), exe];
+  for (const f of natives) sh('codesign', ['--force', '--sign', '-', f]);
+  sh('codesign', ['--force', '--sign', '-', app]);
+  const verify = spawnSync('codesign', ['--verify', '--strict', '--verbose=2', app], { encoding: 'utf8' });
+  console.log('codesign --verify --strict: exit ' + verify.status + ' ' + (verify.stderr || verify.stdout).trim().replace(/\n/g, ' | '));
+  if (verify.status !== 0) throw new Error('the bundle does not verify');
+  console.log(spawnSync('codesign', ['-dv', '--verbose=2', app], { encoding: 'utf8' }).stderr.trim());
+  return app;
+}
+
+/** The .dmg: lzma packing first; when this machine will not make it, the next way, and the one that was used is said. */
+function makeDmg(app, out, work) {
+  const folder = join(work, 'dmg-folder');
+  rmSync(folder, { recursive: true, force: true });
+  mkdirSync(folder, { recursive: true });
+  cpSync(app, join(folder, 'Files Direct.app'), { recursive: true, verbatimSymlinks: true });
+  const tries = [
+    ['ULMO', ['create', '-quiet', '-volname', 'Files Direct', '-srcfolder', folder, '-format', 'ULMO', '-ov', out]],
+    ['ULMO with HFS+', ['create', '-quiet', '-volname', 'Files Direct', '-srcfolder', folder, '-fs', 'HFS+', '-format', 'ULMO', '-ov', out]],
+    ['UDRW then ULMO', null],
+    ['ULFO', ['create', '-quiet', '-volname', 'Files Direct', '-srcfolder', folder, '-format', 'ULFO', '-ov', out]],
+  ];
+  for (const [name, args] of tries) {
+    rmSync(out, { force: true });
+    try {
+      if (args) sh('hdiutil', args);
+      else {
+        const rw = join(work, 'rw.dmg');
+        rmSync(rw, { force: true });
+        sh('hdiutil', ['create', '-quiet', '-volname', 'Files Direct', '-srcfolder', folder, '-fs', 'HFS+', '-format', 'UDRW', '-ov', rw]);
+        sh('hdiutil', ['convert', '-quiet', rw, '-format', 'ULMO', '-o', out]);
+      }
+      if (existsSync(out)) return name;
+    } catch (e) {
+      console.log('dmg: ' + name + ' did not work here: ' + String(e.message).slice(-300));
+    }
+  }
+  throw new Error('no way of making the .dmg worked');
+}
+
+// ---- the Windows app -----------------------------------------------------------------------------------------------------------------------
+
+const frameworkCsc = () => join(process.env.windir ?? 'C:\\Windows', 'Microsoft.NET', 'Framework64', 'v4.0.30319', 'csc.exe');
+
+/** Compiles the tray and launcher program with the compiler that is in every Windows (C# 5, .NET Framework 4). */
+export function compileLauncher(out, work, version, naive = false) {
+  mkdirSync(work, { recursive: true });
+  const ico = join(work, 'app.ico');
+  writeFileSync(ico, iconIco());
+  const v = version.split('.').concat(['0']).slice(0, 4).join('.');
+  const info = join(work, 'AssemblyInfo.cs');
+  writeFileSync(info, 'using System.Reflection;\n[assembly: AssemblyTitle("Files Direct")]\n[assembly: AssemblyProduct("Files Direct")]\n[assembly: AssemblyVersion("' + v + '")]\n[assembly: AssemblyFileVersion("' + v + '")]\n[assembly: AssemblyInformationalVersion("' + version + '")]\n');
+  const args = ['/nologo', '/target:winexe', '/platform:x64', '/optimize+', '/out:' + out, '/win32icon:' + ico, '/r:System.dll', '/r:System.Windows.Forms.dll', '/r:System.Drawing.dll', '/r:System.Web.Extensions.dll', ...(naive ? ['/define:FD_NAIVE'] : []), join('app', 'win', 'FilesDirect.cs'), info];
+  console.log('csc ' + args.join(' '));
+  sh(frameworkCsc(), args);
+  return ico;
+}
+
+function findIscc() {
+  const known = [process.env['ProgramFiles(x86)'] + '\\Inno Setup 6\\ISCC.exe', process.env.ProgramFiles + '\\Inno Setup 6\\ISCC.exe', process.env.LOCALAPPDATA + '\\Programs\\Inno Setup 6\\ISCC.exe'];
+  return known.find((p) => existsSync(p));
+}
+function innoCompiler() {
+  let iscc = findIscc();
+  if (!iscc) {
+    console.log('Inno Setup is not on this machine: installing it with Chocolatey (a build tool, on this build machine only)');
+    sh('choco', ['install', 'innosetup', '--yes', '--no-progress']);
+    iscc = findIscc();
+  }
+  if (!iscc) throw new Error('Inno Setup was not found');
+  console.log('Inno Setup: ' + iscc + ' ' + (spawnSync(iscc, ['/?'], { encoding: 'utf8' }).stdout || '').split('\n')[0]);
+  return iscc;
+}
+
+function buildWinInstaller(stage, work, outDir, version, ico) {
+  sh(innoCompiler(), ['/Qp', '/DAppVersion=' + version, '/DSourceDir=' + stage, '/DOutDir=' + outDir, '/DIcon=' + ico, join('app', 'win', 'installer.iss')]);
 }
 
 const ITEMS = [];
@@ -102,8 +280,12 @@ function packOptions(target, stage, work) {
     note('.tar.xz (xz -9e)', statSync(txz).size);
     for (const fmt of ['UDZO', 'ULFO', 'ULMO']) {
       const dmg = join(work, 'app-' + fmt + '.dmg');
-      sh('hdiutil', ['create', '-quiet', '-volname', 'Files Direct', '-srcfolder', app, '-format', fmt, '-ov', dmg]);
-      note('.dmg (' + fmt + ')', statSync(dmg).size);
+      try {
+        sh('hdiutil', ['create', '-quiet', '-volname', 'Files Direct', '-srcfolder', app, '-format', fmt, '-ov', dmg]);
+        note('.dmg (' + fmt + ')', statSync(dmg).size);
+      } catch (e) {
+        console.log('size    .dmg (' + fmt + ') could not be made on this machine: ' + String(e.message).slice(-200));
+      }
     }
   } else if (t.os === 'win32') {
     note('app folder, as installed', sizeOf(stage));
@@ -130,6 +312,8 @@ export async function main(target, mode) {
   const work = resolve(process.env.FD_APP_WORK ?? join(process.env.RUNNER_TEMP ?? 'app-work', 'files-direct-app-' + target));
   const cache = join(work, 'cache');
   const stage = join(work, 'stage');
+  const outDir = resolve(process.env.FD_APP_OUT ?? 'app-out');
+  const updateOnly = process.env.FD_APP_ONLY === 'update'; // a check that only needs the file the app fetches by itself
   rmSync(stage, { recursive: true, force: true });
   const node = await fetchNode(target, cache);
   note('Node archive as downloaded (' + NODE_VERSION + ')', node.archiveBytes);
@@ -139,22 +323,60 @@ export async function main(target, mode) {
   mkdirSync(res, { recursive: true });
   cpSync(node.node, join(res, t.os === 'win32' ? 'node.exe' : 'node'));
   cpSync(node.license, join(res, 'NODE-LICENSE'));
-  await buildEngine(join(res, 'files-direct.mjs'));
+  const info = await buildEngine(join(res, 'files-direct.mjs'));
+  // the engine knows it is the app, and for which kind of computer, from this file beside it
+  writeFileSync(join(res, 'app.json'), JSON.stringify({ target, version: info.version }) + '\n');
   note('engine file', statSync(join(res, 'files-direct.mjs')).size);
   copyNative(target, res);
   note('native file of this system', sizeOf(join(res, 'node_modules', ...t.native.split('/'))));
   note('the connection library, loader and its one helper', sizeOf(join(res, 'node_modules')) - sizeOf(join(res, 'node_modules', ...t.native.split('/'))));
+  mkdirSync(outDir, { recursive: true });
+  const names = fileNames(info.version);
+  const report = { target, version: info.version, node: NODE_VERSION, items: ITEMS };
+
   if (mode === 'size') {
-    // no shell yet in the measurement: about 0.1 MB on each system
+    // no shell in the measurement: about 0.1 MB on each system
     if (t.os === 'darwin') {
       mkdirSync(join(stage, 'Files Direct.app', 'Contents', 'MacOS'), { recursive: true });
-      writeFileSync(join(stage, 'Files Direct.app', 'Contents', 'Info.plist'), '<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>CFBundleName</key><string>Files Direct</string></dict></plist>\n');
+      writeFileSync(join(stage, 'Files Direct.app', 'Contents', 'Info.plist'), infoPlist(info.version));
     }
     packOptions(target, stage, work);
-    const out = join(process.cwd(), 'app-sizes-' + target + '.json');
-    writeFileSync(out, JSON.stringify({ target, node: NODE_VERSION, items: ITEMS }, null, 2) + '\n');
-    console.log('wrote ' + out);
+    writeFileSync(join(process.cwd(), 'app-sizes-' + target + '.json'), JSON.stringify(report, null, 2) + '\n');
+    return;
   }
+
+  if (t.os === 'darwin') {
+    const app = buildMacApp(target, stage, work, info);
+    note('Files Direct.app, installed', sizeOf(app));
+    const txz = join(outDir, names.update[target]);
+    // COPYFILE_DISABLE keeps the macOS file-metadata companions ("._name") out of the archive
+    sh('tar', ['-cJf', txz, '-C', stage, 'Files Direct.app'], { env: { ...process.env, XZ_OPT: '-9e', COPYFILE_DISABLE: '1' } });
+    note('update file (' + names.update[target] + ')', statSync(txz).size);
+    if (!updateOnly) {
+      const dmg = join(outDir, names.download[target]);
+      const how = makeDmg(app, dmg, work);
+      note('download (' + names.download[target] + ', ' + how + ')', statSync(dmg).size);
+      report.dmgFormat = how;
+    }
+  } else if (t.os === 'win32') {
+    const launcher = join(stage, 'Files Direct.exe');
+    const ico = compileLauncher(launcher, work, info.version);
+    mkdirSync(join(outDir, 'launcher', 'real'), { recursive: true });
+    cpSync(launcher, join(outDir, 'launcher', 'real', 'Files Direct.exe'));
+    if (!updateOnly) compileLauncherNaive(work, info.version, outDir);
+    note('Files Direct.exe (tray and launcher)', statSync(launcher).size);
+    note('installed folder', sizeOf(stage));
+    buildWinInstaller(stage, work, outDir, info.version, ico);
+    note('installer (' + names.download[target] + ')', statSync(join(outDir, names.download[target])).size);
+  } else throw new Error('no app is made for ' + target);
+  writeFileSync(join(outDir, 'build-' + target + '.json'), JSON.stringify(report, null, 2) + '\n');
+}
+
+/** The careless launcher, for the check that shows a hostile name breaks it. Never part of what is shipped. */
+function compileLauncherNaive(work, version, outDir) {
+  const dir = join(outDir, 'launcher', 'naive');
+  mkdirSync(dir, { recursive: true });
+  compileLauncher(join(dir, 'Files Direct.exe'), join(work, 'naive'), version, true);
 }
 
 if (typeof process !== 'undefined' && process.argv?.[1] && import.meta.url === new URL('file://' + (process.platform === 'win32' ? '/' : '') + process.argv[1].replace(/\\/g, '/')).href) {
