@@ -458,12 +458,14 @@ async function winHostile() {
     const expected = ['open', '--app', '--paths-stdin'];
     const exact = seen && JSON.stringify(seen.argv) === JSON.stringify(expected) && JSON.stringify(seen.stdin) === JSON.stringify(files);
     verbOk.push(exact);
+    if (kind === 'real' && !exact) note('the launcher exited ' + first.status + (first.error ? ' (' + first.error + ')' : '') + '; the engine saw argv ' + JSON.stringify(seen?.argv) + ' and ' + (seen?.stdin?.length ?? 'no') + ' paths; first different path: ' + JSON.stringify((seen?.stdin ?? []).find((p, i) => p !== files[i])) + ' expected ' + JSON.stringify(files[(seen?.stdin ?? []).findIndex((p, i) => p !== files[i])]));
     if (kind === 'naive') ok(!exact, 'the careless launcher (the paths pasted into the command line) is broken by these names, as it should be: the check can fail' + (seen ? ' (the engine was started with ' + seen.argv.length + ' words, not ' + expected.length + ')' : ' (the engine did not start properly)'));
     else {
       ok(first.status === 0 && exact, 'the launcher started the engine with exactly "' + expected.join(' ') + '" and all ' + files.length + ' names on its standard input, none on the command line');
       rmSync(log, { force: true });
       run(exe, ['verb "' + files[3] + '"'], { windowsVerbatimArguments: true, cwd: work, stdio: 'ignore', timeout: 30_000 });
       const one = JSON.parse((await until('the stand-in engine (verb)', () => existsSync(log) && readFileSync(log, 'utf8'), 20_000)) ?? 'null');
+      if (!(one && JSON.stringify(one.stdin) === JSON.stringify([files[3]]))) note('verb: the engine saw ' + JSON.stringify(one));
       ok(one && JSON.stringify(one.argv) === JSON.stringify(['open', '--app', '--gather', '--paths-stdin']) && JSON.stringify(one.stdin) === JSON.stringify([files[3]]), 'the registry entry\'s form ("verb") passes one path and asks the engine to gather the others');
     }
     ok(noPwned(work, dir, home), 'nothing else ran (' + kind + '): no file called pwned');
