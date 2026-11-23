@@ -35,7 +35,7 @@ function machine(platform: string) {
     async regDelete(k) { for (const x of [...keys.keys()]) if (x === k || x.startsWith(k + '\\')) keys.delete(x); },
     async regExists(k) { return [...keys.keys()].some((x) => x === k || x.startsWith(k + '\\')); },
     async regPruneEmpty(k) { if (![...keys.keys()].some((x) => x.startsWith(k + '\\')) && keys.get(k) === 'made by install') keys.delete(k); },
-    async shortcut(p, a) { files.set(p, 'shortcut ' + a); },
+    async shortcut(p, t, a) { files.set(p, 'shortcut ' + t + ' ' + a); },
     async refreshServices() { refreshed++; },
   };
   return { fx, files, keys, refreshed: () => refreshed, snapshot: () => JSON.stringify([[...files.entries()].sort(), [...keys.entries()].sort()]) };
@@ -102,13 +102,13 @@ describe('on Windows', () => {
     expect(text).not.toMatch(/HKEY_LOCAL_MACHINE|HKLM|HKEY_CLASSES_ROOT/);
     expect(text).toContain('@="Send with Files Direct"');
     // the command, as the file holds it: backslashes and quotes doubled
-    expect(text).toContain('@="conhost.exe --headless \\"C:\\\\Program Files\\\\nodejs\\\\node.exe\\" ');
-    expect(text).toContain('open --gather -- \\"%1\\""');
+    expect(text).toContain('@="\\"C:\\\\Program Files\\\\nodejs\\\\node.exe\\" ');
+    expect(text).toContain('open --detach --gather -- \\"%1\\""');
     const m = machine('win32');
     const lines = await installMenu(WIN, m.fx);
     expect(lines).toHaveLength(2);
     expect([...m.keys.keys()].filter((k) => /FilesDirect($|\\)/.test(k)).sort()).toEqual(WIN_KEYS.flatMap((k) => [k, k + '\\command']).sort());
-    expect(m.files.get('C:\\Users\\Ann\\AppData\\Roaming\\Microsoft\\Windows\\SendTo\\' + WIN_SENDTO)).toContain('--headless');
+    expect(m.files.get('C:\\Users\\Ann\\AppData\\Roaming\\Microsoft\\Windows\\SendTo\\' + WIN_SENDTO)).toContain('open --detach --');
     expect(await menuStatus(m.fx)).toMatchObject({ installed: true });
   });
 

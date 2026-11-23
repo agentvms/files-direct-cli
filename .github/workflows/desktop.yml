@@ -68,6 +68,8 @@ jobs:
         run: node scripts/desktop-check.mjs window
       - name: Several files chosen in one right-click end up in one room
         run: node scripts/desktop-check.mjs gather
+      - name: The installed registry entry starts the window without a console left on screen, and closing the window ends the run
+        run: node scripts/desktop-check.mjs detach
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:

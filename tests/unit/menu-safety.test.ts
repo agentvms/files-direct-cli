@@ -139,9 +139,8 @@ describe('the Windows registry entry and the Send to shortcut', () => {
       const path = 'C:\\Users\\Ann\\Documents\\' + name;
       const argv = argvOf(line.replace('%1', () => path));
       const at = argv.indexOf('--');
-      expect(argv.slice(0, 2), name).toEqual(['conhost.exe', '--headless']);
-      expect(argv.slice(2, 4), name).toEqual([node, script]);
-      expect(argv.slice(4, at), name).toEqual(['open', '--gather']);
+      expect(argv.slice(0, 2), name).toEqual([node, script]);
+      expect(argv.slice(2, at), name).toEqual(['open', '--detach', '--gather']);
       expect(argv.slice(at + 1), name).toEqual([path]);
     }
   });
@@ -149,7 +148,7 @@ describe('the Windows registry entry and the Send to shortcut', () => {
   it('Send to: Windows adds the chosen files after the arguments; they come through one by one after "--"', () => {
     const args = windowsSendToArguments({ node, script });
     const argv = argvOf(args);
-    expect(argv.slice(0, 4)).toEqual(['--headless', node, script, 'open']);
+    expect(argv.slice(0, 3)).toEqual([script, 'open', '--detach']);
     expect(argv.at(-1)).toBe('--');
     // Explorer adds each file as its own quoted argument
     const files = WINDOWS_OK.map((n) => 'C:\\Users\\Ann\\' + n);

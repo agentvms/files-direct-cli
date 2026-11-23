@@ -121,11 +121,11 @@ async function entry() {
         const r = spawn(line.slice(0, i), [line.slice(i + 1)], { windowsVerbatimArguments: true, cwd, stdio: 'ignore' });
         r.on('error', () => {});
         const got = JSON.parse((await waitFor(out)) ?? 'null');
-        ok(Array.isArray(got) && got.at(-1) === file && got.at(-2) === '--' && got.length === 4, 'registry entry: ' + JSON.stringify(file.slice(file.lastIndexOf('\\') + 1)) + ' reached the program as one argument');
+        ok(Array.isArray(got) && got.at(-1) === file && got.at(-2) === '--' && got.includes('--detach') && got.includes('--gather'), 'registry entry: ' + JSON.stringify(file.slice(file.lastIndexOf('\\') + 1)) + ' reached the program as one argument');
       }
       // Send to: Explorer adds each chosen file as its own quoted argument
       const link = lnk(SENDTO);
-      ok(/conhost\.exe$/i.test(link.target), 'the Send to shortcut starts conhost.exe: ' + link.target);
+      ok(link.target.toLowerCase() === process.execPath.toLowerCase(), 'the Send to shortcut starts node: ' + link.target);
       rmSync(out, { force: true });
       const line = link.args + ' ' + files.map((f) => '"' + f + '"').join(' ');
       spawn(link.target, [line], { windowsVerbatimArguments: true, cwd, stdio: 'ignore' }).on('error', () => {});
@@ -295,7 +295,61 @@ async function gather() {
   }
 }
 
-const steps = { install, entry, menu, window, gather };
+// ---- detach: the entry the real program installed starts the real run without a window of its own and ends at once -------------------------------------
+
+const processes = () => {
+  const r = run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', 'Get-CimInstance Win32_Process | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress'], { maxBuffer: 64 * 1024 * 1024 });
+  try {
+    return [].concat(JSON.parse(r.stdout)).filter((p) => p && p.CommandLine);
+  } catch {
+    return [];
+  }
+};
+
+async function detach() {
+  if (!WIN) return;
+  mkdirSync(SHOTS, { recursive: true });
+  const work = mkdtempSync(join(tmpdir(), 'fd-detach-'));
+  const files = makeFiles(join(work, 'files')).slice(0, 3);
+  const { child: stub, site } = await stubRooms();
+  program(['menu', 'install']);
+  try {
+    const verb = regDefault(KEYS[0]);
+    ok(Boolean(verb), 'read the command of the real registry entry: ' + verb);
+    // the registry entry, for the first file only (the others are the same program started again): it has to end quickly, with no window left behind
+    const line = verb.replace('%1', () => files[0]);
+    const i = line.indexOf('"', 1);
+    const started = Date.now();
+    const launcher = spawn(line.slice(0, i + 1).replace(/"/g, ''), [line.slice(i + 2)], { windowsVerbatimArguments: true, env: { ...process.env, FILES_DIRECT_ORIGIN: site }, stdio: 'ignore' });
+    const code = await new Promise((r) => launcher.on('exit', (c) => r(c)));
+    ok(code === 0 && Date.now() - started < 8000, 'the program the entry starts ends at once with status 0 (' + (Date.now() - started) + ' ms)');
+    // the real run is a child with no window of its own, and it opens the window
+    let app = null;
+    for (let t = 0; t < 40 && !app; t++) {
+      await sleep(500);
+      app = processes().find((p) => /--app=http:\/\/127\.0\.0\.1:\d+\/w\//.test(p.CommandLine));
+    }
+    ok(Boolean(app), 'the real run started the window (an app-style window of the browser)');
+    const real = processes().find((p) => /files-direct\.mjs"? open /.test(p.CommandLine) && !/--detach/.test(p.CommandLine));
+    ok(Boolean(real), 'the real run is its own process, started without --detach');
+    await sleep(3000);
+    run('powershell.exe', ['-NoProfile', '-Command', "Add-Type -AssemblyName System.Windows.Forms,System.Drawing; $b=[System.Windows.Forms.Screen]::PrimaryScreen.Bounds; $bmp=New-Object System.Drawing.Bitmap $b.Width,$b.Height; $g=[System.Drawing.Graphics]::FromImage($bmp); $g.CopyFromScreen($b.Location,[System.Drawing.Point]::Empty,$b.Size); $bmp.Save($env:FD_SHOT)"], { env: { ...process.env, FD_SHOT: join(SHOTS, 'entry-window-win32.png') } });
+    if (app) run('taskkill', ['/PID', String(app.ProcessId), '/T', '/F']);
+    let gone = false;
+    for (let t = 0; t < 60 && !gone; t++) {
+      await sleep(500);
+      gone = real ? !processes().some((p) => p.ProcessId === real.ProcessId) : true;
+    }
+    ok(gone, 'closing the window ended the real run: nothing is left running');
+  } finally {
+    program(['menu', 'remove']);
+    stub.stdin.end();
+    stub.kill();
+    rmSync(work, { recursive: true, force: true });
+  }
+}
+
+const steps = { install, entry, menu, window, gather, detach };
 const step = process.argv[2];
 if (!steps[step]) {
   console.error('usage: node scripts/desktop-check.mjs ' + Object.keys(steps).join(' | '));

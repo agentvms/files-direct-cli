@@ -1,4 +1,5 @@
 import { parseArgs } from 'node:util';
+import { spawn } from 'node:child_process';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { cleanNote } from '../../shared/ask.ts';
@@ -40,6 +41,8 @@ export interface Io {
   gather?: GatherOptions;
   /** How long the window's page may stay silent before the window counts as closed, in ms. */
   windowIdleMs?: number;
+  /** Starts the real run for `open --detach` (a test brings its own). */
+  spawn?: typeof spawn;
 }
 
 export const USAGE = `Files Direct: send and receive files and folders from a terminal or a script, with no browser.
@@ -163,6 +166,7 @@ export async function runCli(argv: string[], io: Io): Promise<number> {
         overwrite: { type: 'boolean' },
         qr: { type: 'boolean' },
         gather: { type: 'boolean' },
+        detach: { type: 'boolean' },
         'no-window': { type: 'boolean' },
         'no-qr': { type: 'boolean' },
       },
@@ -179,6 +183,7 @@ export async function runCli(argv: string[], io: Io): Promise<number> {
     return 2;
   };
   if (command === 'menu') return runMenu(args.positionals, io);
+  if (command === 'open' && v.detach) return detach(rest, io);
   const origin = originFrom(v.site, io.env);
   if (!origin) return usage('No site address: pass --site <address> or set FILES_DIRECT_ORIGIN.');
   const password = v.password ?? io.env.FILES_DIRECT_PASSWORD;
@@ -338,4 +343,22 @@ async function runOpen(
   await handle?.close();
   await server.close();
   return code;
+}
+
+/**
+ * `open --detach`: what the Windows menu entries run. Node is a console program, so Windows shows a console window for it; the real run (the window, the
+ * room, the transfer) is started again here as a child with no window of its own, and this process ends at once. The child gets the same arguments minus --detach.
+ */
+function detach(rest: string[], io: Io): number {
+  if (!io.program) {
+    io.err('This program does not know where it is installed, so it cannot start the window.');
+    return 1;
+  }
+  const end = rest.indexOf('--');
+  const head = (end < 0 ? rest : rest.slice(0, end)).filter((a) => a !== '--detach');
+  const args = [...head, ...(end < 0 ? [] : rest.slice(end))];
+  const child = (io.spawn ?? spawn)(io.program.node, [io.program.script, 'open', ...args], { detached: true, windowsHide: true, stdio: 'ignore' });
+  child.on('error', () => {});
+  child.unref();
+  return 0;
 }

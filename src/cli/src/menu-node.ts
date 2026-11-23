@@ -55,12 +55,11 @@ export function nodeEffects(env: Record<string, string | undefined> = process.en
       if (lines.length <= 1) await run(REG, ['delete', regKey(key), '/f']); // only its own name came back: nothing in it
     },
     regExists: async (key) => (await run(REG, ['query', regKey(key)])).code === 0,
-    async shortcut(path, args) {
-      const root = env.SystemRoot ?? env.windir ?? 'C:\\Windows';
+    async shortcut(path, target, args) {
       await mkdir(dirname(path), { recursive: true });
       // the values travel in the environment, never inside the script text
       const script = '$s=(New-Object -ComObject WScript.Shell).CreateShortcut($env:FD_LNK);$s.TargetPath=$env:FD_TARGET;$s.Arguments=$env:FD_ARGS;$s.WindowStyle=7;$s.Description=$env:FD_TEXT;$s.Save()';
-      const r = await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script], { FD_LNK: path, FD_TARGET: join(root, 'System32', 'conhost.exe'), FD_ARGS: args, FD_TEXT: 'Send with Files Direct' });
+      const r = await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script], { FD_LNK: path, FD_TARGET: target, FD_ARGS: args, FD_TEXT: 'Send with Files Direct' });
       if (r.code !== 0) throw new Error('Windows would not make the Send to shortcut: ' + r.out.trim());
     },
     async refreshServices() {

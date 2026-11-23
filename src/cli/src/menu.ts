@@ -54,16 +54,20 @@ function windowsPaths(l: Launch): [string, string] {
   return [windowsQuote(l.node), windowsQuote(l.script)];
 }
 
-/** The command line of the registry entry: Windows fills in the chosen file where it finds %1. No window is drawn for the program's own console (conhost --headless). */
+/**
+ * The command line of the registry entry: Windows fills in the chosen file where it finds %1.
+ * "--detach": node is a console program, so Windows draws a console window for it. The program starts its real run in a child that has no window and ends
+ * at once, so the console is on screen for a moment only (a window of our own would need a signed program: rung 2). "--gather": see cli/src/gather.ts.
+ */
 export function windowsVerbCommand(l: Launch): string {
   const [node, script] = windowsPaths(l);
-  return `conhost.exe --headless ${node} ${script} open --gather -- "%1"`;
+  return `${node} ${script} open --detach --gather -- "%1"`;
 }
 
-/** The arguments of the Send to shortcut (its target is conhost.exe): Explorer adds the chosen files after them, each as its own quoted argument. */
+/** The arguments of the Send to shortcut (its target is node itself): Explorer adds the chosen files after them, each as its own quoted argument. */
 export function windowsSendToArguments(l: Launch): string {
-  const [node, script] = windowsPaths(l);
-  return `--headless ${node} ${script} open --`;
+  const [, script] = windowsPaths(l);
+  return `${script} open --detach --`;
 }
 
 // ---- the Mac workflow ---------------------------------------------------------------------------------------------------------------------
@@ -303,7 +307,7 @@ export interface MenuEffects {
   /** Deletes the key only when it holds nothing at all (no subkey, no value); nothing happens otherwise or when it is not there. */
   regPruneEmpty(key: string): Promise<void>;
   regExists(key: string): Promise<boolean>;
-  shortcut(path: string, args: string): Promise<void>;
+  shortcut(path: string, target: string, args: string): Promise<void>;
   /** Tells the system that the list of Services changed. May do nothing. */
   refreshServices(): Promise<void>;
 }
@@ -335,7 +339,7 @@ export async function installMenu(l: Launch, fx: MenuEffects): Promise<string[]>
   const text = windowsRegText(l); // refuses a program path Windows would change, before anything is written
   const args = windowsSendToArguments(l);
   await fx.regImport(text);
-  await fx.shortcut(sendToPath(fx), args);
+  await fx.shortcut(sendToPath(fx), l.node, args);
   return [`Added "${MENU_TEXT}" to the menu for files and for folders (in the registry, for you only).`, `Added "Files Direct" to Send to.`];
 }
 
