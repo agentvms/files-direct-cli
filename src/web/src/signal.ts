@@ -1,18 +1,19 @@
 import type { Role } from './types.ts';
 
 /** `c` names the connection attempt a message belongs to and `k` its route ("direct" or "relay"). */
-export type Message = { t: string; d?: unknown; c?: number; k?: 'direct' | 'relay'; code?: string; ref?: string; retryAfter?: number; reason?: string };
+/** `to` names the device a message is for and `from` the one it came from, in a room that holds several (the host's side only; a device never sees either). */
+export type Message = { t: string; d?: unknown; c?: number; k?: 'direct' | 'relay'; code?: string; ref?: string; retryAfter?: number; reason?: string; to?: string; from?: string };
 
 export interface Signal {
   send(msg: Message): void;
   close(): void;
 }
 
-export type JoinFailure = 'gone' | 'full' | 'busy' | 'paused' | 'network' | 'wrong-code' | 'slow-down';
+export type JoinFailure = 'gone' | 'full' | 'crowded' | 'busy' | 'paused' | 'network' | 'wrong-code' | 'slow-down';
 
 export interface SignalHandlers {
   onMessage(msg: Message): void;
-  /** The server could not be reached, or the room refused us. `waitSeconds` comes with `slow-down`. */
+  /** The server could not be reached, or the room refused us. `waitSeconds` comes with `slow-down`, and the number of devices a room holds with `crowded`. */
   onFailed(why: JoinFailure, waitSeconds?: number): void;
   onClosed(): void;
 }
@@ -26,16 +27,16 @@ export interface SignalWhere {
   headers?: Record<string, string>;
 }
 
-function wsUrl(target: Target, role: Role, where?: SignalWhere, start?: 'ask'): string {
+function wsUrl(target: Target, role: Role, where?: SignalWhere, start?: 'ask', multi?: boolean): string {
   const u = where ? new URL(where.origin) : location;
   const proto = u.protocol === 'https:' ? 'wss:' : 'ws:';
   return target.kind === 'room'
-    ? `${proto}//${u.host}/api/rooms/${target.id}/ws?role=${role}${role === 'sender' && start ? '&start=' + start : ''}`
+    ? `${proto}//${u.host}/api/rooms/${target.id}/ws?role=${role}${role === 'sender' && start ? '&start=' + start : ''}${role === 'sender' && multi ? '&multi=1' : ''}`
     : `${proto}//${u.host}/api/codes/${target.code}/ws`;
 }
 
-function failureOf(status: number): JoinFailure {
-  return status === 404 ? 'gone' : status === 409 ? 'full' : status === 429 ? 'busy' : status === 503 ? 'paused' : 'network';
+function failureOf(status: number, crowded = false): JoinFailure {
+  return status === 404 ? 'gone' : status === 409 ? (crowded ? 'crowded' : 'full') : status === 429 ? 'busy' : status === 503 ? 'paused' : 'network';
 }
 
 /**
@@ -56,16 +57,16 @@ function mayPass(status: number | null): boolean {
  * after a failure. A code is asked first, once: every wrong code counts against the person's limit, so it
  * must not be tried twice.
  */
-export function openSignal(target: Target, role: Role, h: SignalHandlers, where?: SignalWhere, start?: 'ask'): Signal {
+export function openSignal(target: Target, role: Role, h: SignalHandlers, where?: SignalWhere, start?: 'ask', multi?: boolean): Signal {
   let ws: WebSocket | null = null;
   let closed = false;
   let tries = 0;
-  const httpUrl = () => wsUrl(target, role, where, start).replace(/^ws/, 'http');
+  const httpUrl = () => wsUrl(target, role, where, start, multi).replace(/^ws/, 'http');
   const plain = (): RequestInit | undefined => (where?.headers ? { headers: where.headers } : undefined);
 
   function connect(): void {
     // a page cannot add headers to its socket; a program can (the second argument is the program's own WebSocket)
-    const socket = where?.headers ? new (WebSocket as unknown as new (url: string, o: unknown) => WebSocket)(wsUrl(target, role, where, start), { headers: where.headers }) : new WebSocket(wsUrl(target, role, where, start));
+    const socket = where?.headers ? new (WebSocket as unknown as new (url: string, o: unknown) => WebSocket)(wsUrl(target, role, where, start, multi), { headers: where.headers }) : new WebSocket(wsUrl(target, role, where, start, multi));
     ws = socket;
     let opened = false;
     socket.addEventListener('open', () => (opened = true));
@@ -96,9 +97,18 @@ export function openSignal(target: Target, role: Role, h: SignalHandlers, where?
   async function askWhy(): Promise<void> {
     let status: number | null = null;
     let wait: number | undefined;
+    let crowded = false;
     try {
       const r = await fetch(httpUrl(), plain());
       status = r.status;
+      if (status === 409) {
+        // a room that holds several devices says how many (and a room that does not, nothing): the answer for a full room is then not "someone is receiving right now"
+        const body = (await r.json().catch(() => ({}))) as { max?: number };
+        if (typeof body.max === 'number') {
+          crowded = true;
+          wait = body.max;
+        }
+      }
       if (status === 429) {
         const body = (await r.json().catch(() => ({}))) as { retryAfter?: number };
         wait = body.retryAfter ?? (Number(r.headers.get('retry-after')) || undefined);
@@ -111,7 +121,7 @@ export function openSignal(target: Target, role: Role, h: SignalHandlers, where?
       setTimeout(() => !closed && connect(), JOIN_RETRY_MS[tries++]);
       return;
     }
-    h.onFailed(status === null ? 'network' : failureOf(status), wait);
+    h.onFailed(status === null ? 'network' : failureOf(status, crowded), wait);
   }
 
   if (target.kind === 'code') {
@@ -124,7 +134,9 @@ export function openSignal(target: Target, role: Role, h: SignalHandlers, where?
           const body = (await r.json().catch(() => ({}))) as { retryAfter?: number };
           return h.onFailed('slow-down', body.retryAfter ?? Number(r.headers.get('retry-after') ?? 30));
         }
-        h.onFailed(r.status === 409 ? 'full' : 'network');
+        if (r.status !== 409) return h.onFailed('network');
+        const body = (await r.json().catch(() => ({}))) as { max?: number };
+        h.onFailed(typeof body.max === 'number' ? 'crowded' : 'full', typeof body.max === 'number' ? body.max : undefined);
       })
       .catch(() => h.onFailed('network'));
   } else {

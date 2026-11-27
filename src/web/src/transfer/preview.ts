@@ -1,5 +1,5 @@
 /** Small previews of photos: what both ends agree on, with no page dependencies (docs/PROTOCOL.md, "Previews"). The picture-making itself is in preview-make.ts. */
-import { PREVIEW_SOURCE_MAX_BYTES, PREVIEW_SOURCE_TYPES, PREVIEW_TYPES } from '../../../shared/config.ts';
+import { POSTER_SOURCE_TYPES, PREVIEW_SOURCE_MAX_BYTES, PREVIEW_SOURCE_TYPES, PREVIEW_TYPES } from '../../../shared/config.ts';
 
 /** A preview the sender made: the picture, ready for a frame. */
 export interface PreviewImage {
@@ -14,6 +14,12 @@ export const isPreviewSource = (type: string, size: number): boolean => PREVIEW_
 
 /** Is the manifest's type one a preview may be drawn for? (the size does not matter to the one who receives it) */
 export const isPreviewKind = (type: string): boolean => PREVIEW_SOURCE_TYPES.includes(type.toLowerCase().split(';')[0]!.trim());
+
+/** Is this file (as the manifest names it) a video a poster may be made from? The type is the sender's word; the browser that opens it has the last say. */
+export const isPosterSource = (type: string, size: number): boolean => isPosterKind(type) && size > 0;
+
+/** Is the manifest's type one a poster may be drawn for? */
+export const isPosterKind = (type: string): boolean => POSTER_SOURCE_TYPES.includes(type.toLowerCase().split(';')[0]!.trim());
 
 export const isPreviewType = (type: unknown): type is string => typeof type === 'string' && PREVIEW_TYPES.includes(type);
 

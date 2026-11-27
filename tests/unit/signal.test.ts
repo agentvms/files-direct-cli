@@ -230,3 +230,39 @@ describe('the start word of a room that asks (files-direct-28)', () => {
     for (const u of [FakeSocket.all[0]!.url, ...asked]) expect(u).not.toContain(note.split(' ')[0]!);
   });
 });
+
+describe('several devices in one room (files-direct-55)', () => {
+  it('a sender that can hold several devices says so on its socket; a receiver never does', async () => {
+    openSignal({ kind: 'room', id: 'room1' }, 'sender', { onMessage: () => {}, onFailed: () => {}, onClosed: () => {} }, undefined, 'ask', true);
+    openSignal({ kind: 'room', id: 'room1' }, 'sender', { onMessage: () => {}, onFailed: () => {}, onClosed: () => {} });
+    openSignal({ kind: 'room', id: 'room1' }, 'receiver', { onMessage: () => {}, onFailed: () => {}, onClosed: () => {} }, undefined, undefined, true);
+    expect(FakeSocket.all.map((s) => s.url)).toEqual([
+      'ws://x.test/api/rooms/room1/ws?role=sender&start=ask&multi=1',
+      'ws://x.test/api/rooms/room1/ws?role=sender',
+      'ws://x.test/api/rooms/room1/ws?role=receiver',
+    ]);
+  });
+
+  it('a full room that says how many devices it holds is told apart from one that is busy', async () => {
+    probes.push(answer(409, { error: 'room-full', max: 8 }));
+    const { failed } = join();
+    FakeSocket.all[0]!.refuse();
+    await settle();
+    expect(failed).toEqual([['crowded', 8]]);
+  });
+
+  it('a room of one device at a time still says full, with no number', async () => {
+    probes.push(answer(409, { error: 'room-full' }));
+    const { failed } = join();
+    FakeSocket.all[0]!.refuse();
+    await settle();
+    expect(failed).toEqual([['full', undefined]]);
+  });
+
+  it('a code that meets a full room says so the same way', async () => {
+    probes.push(answer(409, { error: 'room-full', max: 8 }));
+    const { failed } = join({ kind: 'code', code: '123456789' });
+    await settle();
+    expect(failed).toEqual([['crowded', 8]]);
+  });
+});

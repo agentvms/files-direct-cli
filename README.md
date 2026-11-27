@@ -151,7 +151,7 @@ It sends nothing to anyone but the room on the site and the other device. It rea
 
 ## Not in version 1
 
-No resume: a transfer that breaks starts again. Several people cannot send into one ask at the same time (a room is one device at a time), and an ask only works while the program that made it runs, because nothing is stored.
+No resume: a transfer that breaks starts again. Several people cannot send into an ask the program opens at the same time (it holds one device at a time; the page's own ask rooms take several), and an ask only works while the program that made it runs, because nothing is stored.
 
 ## Licence
 
@@ -162,7 +162,7 @@ MIT.
 Every version is attached to a release here as a package file. This works whether or not the package is on npm:
 
 ```
-npm install -g https://github.com/agentvms/files-direct-cli/releases/download/v0.2.1/files-direct-0.2.1.tgz
+npm install -g https://github.com/agentvms/files-direct-cli/releases/download/v0.2.2/files-direct-0.2.2.tgz
 ```
 
 ## The plugin

@@ -41,6 +41,8 @@ export const REPORT_TEXT_MAX = 4000;
 export const REPORT_FACTS_MAX = 3000;
 export const REPORT_LIMIT_PER_HOUR = 5;
 export const REPORT_RETENTION_MS = 90 * DAY_MS;
+/** An open report nobody has written to (the person, or the team) for this long is deleted, with its files. */
+export const REPORT_IDLE_MS = 180 * DAY_MS;
 /** Report attachments (pictures, one recording, its still frames). See docs/REPORTS.md. */
 export const REPORT_IMAGES_MAX = 5;
 export const REPORT_IMAGE_BYTES = 5 * 1024 * 1024;
@@ -97,6 +99,21 @@ export const PREVIEW_LIMITS: { direct: PreviewLimits; relay: PreviewLimits } = {
 export const previewLimits = (relay: boolean): PreviewLimits => (relay ? PREVIEW_LIMITS.relay : PREVIEW_LIMITS.direct);
 /** The kinds of file a sender may try to make a preview of (never SVG). A file that cannot be decoded here (HEIC in Chrome, say) simply has none. */
 export const PREVIEW_SOURCE_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/avif', 'image/heic', 'image/heif'];
+/**
+ * Video posters (files-direct-47, C): the kinds of file a sender may try to take one frame from. The page (never the transfer worker, which has no video decoder)
+ * opens the file in a video element; a browser that cannot play it gives no poster and the file keeps its icon. A poster is a preview: the same count, edge and byte limits.
+ */
+export const POSTER_SOURCE_TYPES = ['video/mp4', 'video/webm', 'video/quicktime', 'video/ogg', 'video/x-m4v'];
+/** The sender gives up on one video's frame after this long (a video has to be opened and sought). */
+export const POSTER_ONE_MS = 6000;
+/**
+ * Scrub frames (files-direct-47, I): a handful of very small frames of a video that already has a poster, for the hover hint on a computer. Only on the direct route, only to a receiver that
+ * asked (a fine pointer with hover, no wish for less motion). At most `frames` of `edge` pixels and `bytes` each, for at most `videos` videos of a batch: a batch's scrub frames are never more
+ * than SCRUB_BYTE_BUDGET bytes (before base64), on top of the previews.
+ */
+export const SCRUB_LIMITS = { frames: 4, edge: 160, bytes: 6 * 1024, videos: 6 } as const;
+export const SCRUB_BYTE_BUDGET = SCRUB_LIMITS.frames * SCRUB_LIMITS.bytes * SCRUB_LIMITS.videos;
+
 /** A file bigger than this is not decoded for a preview. */
 export const PREVIEW_SOURCE_MAX_BYTES = 50 * 1000 * 1000;
 /** The kinds of picture a preview frame may hold. */
@@ -128,6 +145,11 @@ export const WRONG_STREAK_EXPIRY_MS = 24 * 60 * 60 * 1000;
 
 /** How long a stranger may wait at the door (a password to type, or the sender's answer) before being turned away. */
 export const KNOCK_TIMEOUT_MS = 2 * 60 * 1000;
+/**
+ * The most devices one room holds at once (files-direct-55). Each one is a connection of its own that the host's page keeps open and reads files for, and, when it goes
+ * through our servers, a share of the room's free amount. 8 is what a phone holding the room can serve without the first device slowing down; past it the room says it is full.
+ */
+export const MAX_ROOM_DEVICES = 8;
 /** The longest note an asker may add to a request for files (files-direct-28), in characters, counted on the side that shows it. */
 export const ASK_NOTE_MAX_CHARS = 200;
 /** The longest password the sender may set, in characters. */

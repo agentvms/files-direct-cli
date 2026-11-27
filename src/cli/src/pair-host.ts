@@ -37,6 +37,8 @@ export class PairHost implements PairPort {
   private names: ReturnType<typeof savedName> | null = null;
   private send: ((m: PairWire) => void) | null = null;
   private canPair = false;
+  /** The name the other device said it has (files-direct-42), where a nickname for it starts. */
+  private peerName = '';
   private up = false;
 
   constructor(private readonly o: PairHostOptions) {
@@ -48,6 +50,7 @@ export class PairHost implements PairPort {
         view: o.view,
         send: (m) => this.send?.(m),
         guess: o.guess,
+        announced: () => this.peerName,
         register: (id, check) => registerPair(id, check, o.where),
         unregister: async (id, token) => void (await forgetPair(id, token, o.where)),
         after: (fn, ms) => {
@@ -71,6 +74,7 @@ export class PairHost implements PairPort {
   connected(on: boolean): void {
     this.up = on;
     if (!on) {
+      this.peerName = ''; // the next device in this room says its own name, or none
       this.flow?.dispose();
       this.flow = null;
       return;
@@ -84,6 +88,7 @@ export class PairHost implements PairPort {
   }
 
   handle(m: PairWire): void {
+    if (m && m.t === 'pair' && m.p === 'name') this.peerName = cleanDeviceName(m.name);
     void this.flow?.handle(m);
     this.names?.handle(m);
   }
@@ -120,7 +125,7 @@ export function programView(o: { offer: boolean; accept: boolean; name?: string;
       }
     },
     form(start, ok) {
-      ok(o.name ?? start);
+      ok(start, o.name); // the nickname is left as it starts; --name is this computer's own name, as before
     },
     waiting() {
       o.say({ state: 'offered' });
@@ -128,7 +133,7 @@ export function programView(o: { offer: boolean; accept: boolean; name?: string;
     asked(_their, start, ok, no) {
       if (!o.accept) return no();
       o.say({ state: 'asked' });
-      ok(o.name ?? start);
+      ok(start, o.name);
     },
     saved(name) {
       o.say({ state: 'saved', name });

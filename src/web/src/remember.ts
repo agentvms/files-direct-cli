@@ -14,12 +14,15 @@ export type RememberProblem = 'declined' | 'failed' | 'full' | 'busy' | 'timed-o
 export interface RememberView {
   /** Nothing is going on: a button that starts it, or nothing at all when it cannot be offered now. */
   idle(offer: (() => void) | null): void;
-  /** This side asks: a name for this device, then Remember or Cancel. */
-  form(start: string, ok: (name: string) => void, cancel: () => void): void;
+  /**
+   * This side asks. The screen is about the OTHER device: `start` is the name that device gave itself, and the person may change it into a nickname that stays on this device.
+   * `own` is only for a program that says this device's own name with its yes (`--name`); a screen never passes it.
+   */
+  form(start: string, ok: (nickname: string, own?: string) => void, cancel: () => void): void;
   /** The other side was asked and has not answered. */
   waiting(): void;
-  /** The other side asks: the name it gave itself, a name for this device, then Remember or No thanks. */
-  asked(theirName: string, start: string, ok: (name: string) => void, no: () => void): void;
+  /** The other side asks: the name it gave itself, the nickname to keep it by (starts as that name), then Remember or No thanks. */
+  asked(theirName: string, start: string, ok: (nickname: string, own?: string) => void, no: () => void): void;
   saved(theirName: string): void;
   /** It ended without a saved device. again tries once more (null when it cannot be offered). */
   problem(why: RememberProblem, again: (() => void) | null): void;
@@ -29,8 +32,10 @@ export interface RememberDeps {
   kv: Keeper;
   view: RememberView;
   send(m: PairWire): void;
-  /** A plain guess at this device's name, to start the field from. */
+  /** A plain guess at this device's name, said to the other device when this one was never named. */
   guess(): string;
+  /** The name the other device said it has (or a plain word for its kind of device when it said none), to start the nickname from. */
+  announced(): string;
   /** Makes the pair's slot on our side (the check of its forget token); true when it was made. */
   register(id: string, check: string): Promise<boolean>;
   /** Takes the slot away again (a try that did not finish). */
@@ -52,6 +57,8 @@ export class RememberFlow {
   private mode: Mode = 'idle';
   private available = false;
   private theirs = '';
+  /** What this person chose to call the other device ('' = keep the name it gave itself). Never this device's own name. */
+  private nick = '';
   private made: { id: string; token: string; secret: string } | null = null;
   private stop: (() => void) | null = null;
   private ended = false;
@@ -90,6 +97,7 @@ export class RememberFlow {
     this.clear();
     this.mode = 'idle';
     this.made = null;
+    this.nick = '';
   }
 
   private end(why: RememberProblem): void {
@@ -103,8 +111,23 @@ export class RememberFlow {
     return readStore(this.d.kv).devices.length >= SAVED_DEVICES_MAX;
   }
 
-  private start(): string {
-    return readStore(this.d.kv).self || this.d.guess();
+  /** This device's own name, as said to the other device: the one it was given, else a plain guess. Reading it writes nothing. */
+  private own(say?: string): string {
+    const given = cleanDeviceName(say);
+    if (given) setSelfName(this.d.kv, given); // only a program's --name: a person's screens never name this device from here
+    return given || readStore(this.d.kv).self || this.d.guess();
+  }
+
+  /** What was typed for the other device, as a nickname: nothing when the field was left as it started (the device keeps following the name it gives itself). */
+  private asNick(typed: string, start: string): string {
+    const nick = cleanDeviceName(typed);
+    return nick && nick !== start ? nick : '';
+  }
+
+  /** A saved device as this browser keeps it: shown by the nickname when the person chose another name than the one the device gave itself. */
+  private device(id: string, secret: string, side: 'a' | 'b'): SavedDevice {
+    const nick = this.nick && this.nick !== this.theirs ? this.nick : '';
+    return { id, name: nick || this.theirs, secret, side, made: Date.now(), ...(nick ? { nick } : {}) };
   }
 
   /** The person pressed "Remember this device". */
@@ -112,11 +135,12 @@ export class RememberFlow {
     if (this.mode !== 'idle' || this.ended) return;
     if (this.full()) return this.d.view.problem('full', null);
     this.mode = 'form';
+    const start = cleanDeviceName(this.d.announced()) || FALLBACK;
     this.d.view.form(
-      this.start(),
-      (name) => {
-        const mine = cleanDeviceName(name) || this.d.guess();
-        setSelfName(this.d.kv, mine);
+      start,
+      (name, own) => {
+        const mine = this.own(own);
+        this.nick = this.asNick(name, start);
         this.mode = 'waiting';
         this.d.view.waiting();
         this.d.send({ t: 'pair', p: 'offer', name: mine });
@@ -171,10 +195,10 @@ export class RememberFlow {
     this.theirs = cleanDeviceName(m.name) || FALLBACK;
     this.d.view.asked(
       this.theirs,
-      this.start(),
-      (name) => {
-        const mine = cleanDeviceName(name) || this.d.guess();
-        setSelfName(this.d.kv, mine);
+      this.theirs,
+      (name, own) => {
+        const mine = this.own(own);
+        this.nick = this.asNick(name, this.theirs);
         this.mode = 'accepted';
         this.d.view.waiting();
         this.d.send({ t: 'pair', p: 'accept', name: mine });
@@ -236,31 +260,33 @@ export class RememberFlow {
     }
     const id = await pairIdFromSecret(m.secret);
     if (this.mode !== 'accepted') return;
-    const kept = addDevice(this.d.kv, { id, name: this.theirs, secret: m.secret, side: 'b', made: Date.now() });
+    const dev = this.device(id, m.secret, 'b');
+    const kept = addDevice(this.d.kv, dev);
     if (kept !== 'ok') {
       this.d.send({ t: 'pair', p: 'cancel', why: kept === 'full' ? 'full' : 'failed' });
       return this.end(kept === 'full' ? 'full' : 'not-saved');
     }
     this.d.send({ t: 'pair', p: 'done' });
-    this.finish(id, m.secret, 'b');
+    this.finish(dev);
   }
 
   private onDone(): void {
     const made = this.made;
     if (this.mode !== 'sent' || !made) return;
-    const kept = addDevice(this.d.kv, { id: made.id, name: this.theirs, secret: made.secret, side: 'a', made: Date.now() });
+    const dev = this.device(made.id, made.secret, 'a');
+    const kept = addDevice(this.d.kv, dev);
     if (kept !== 'ok') {
       this.d.send({ t: 'pair', p: 'cancel', why: 'failed' });
       return this.end(kept === 'full' ? 'full' : 'not-saved');
     }
     this.made = null; // kept: the slot stays
-    this.finish(made.id, made.secret, 'a');
+    this.finish(dev);
   }
 
-  private finish(id: string, secret: string, side: 'a' | 'b'): void {
+  private finish(dev: SavedDevice): void {
     this.reset();
-    this.d.view.saved(this.theirs);
-    this.d.saved({ id, name: this.theirs, secret, side, made: Date.now() });
+    this.d.view.saved(dev.name);
+    this.d.saved(dev);
   }
 
   /** The room is over: nothing is left running, and a slot made for a try that did not finish is taken away. */

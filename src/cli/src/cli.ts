@@ -2,7 +2,7 @@ import { parseArgs } from 'node:util';
 import { spawn } from 'node:child_process';
 import { homedir, tmpdir } from 'node:os';
 import { rm, rmdir } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { cleanNote } from '../../shared/ask.ts';
 import { formatCode } from '../../shared/code.ts';
 import { cleanDeviceName } from '../../shared/pair.ts';
@@ -19,9 +19,10 @@ import { PairHost, guessComputerName, programView } from './pair-host.ts';
 import { runListen } from './listen.ts';
 import { SavedBook } from './saved.ts';
 import { receiveSaved, runDevices } from './saved-run.ts';
-import { dataLeftovers, devicesFile } from './store.ts';
+import { DECLINE_FILE, dataDir, dataLeftovers, devicesFile } from './store.ts';
+import { type PlaceEffects, addDecline, decidePlace, locationKey, menuItem, nodePlaceEffects, placeFacts, startMove } from './place.ts';
 import { BUILT_UPDATE_KEY, VERSION, installLine, originFrom, roomEnv } from './config.ts';
-import { type AppInfo, readAppInfo, removeApp, stagingBeside, startInstaller, startSwap, stageMacUpdate, tidyUpdates, updateFolder } from './app-install.ts';
+import { type AppInfo, MAC_APP, readAppInfo, removeApp, stagingBeside, startInstaller, startSwap, stageMacUpdate, tidyUpdates, updateFolder } from './app-install.ts';
 import { UpdateRefused, checkForUpdate, downloadUpdate, refusalText } from './update.ts';
 import { collect } from './fs-source.ts';
 import { etaText, size } from './format.ts';
@@ -54,6 +55,8 @@ export interface Io {
   spawn?: typeof spawn;
   /** The paths the app's launcher hands over on the standard input for `open --paths-stdin`, separated by NUL bytes. Without it: this process's own standard input. */
   stdin?: () => Promise<Uint8Array>;
+  /** The computer the Mac app's "move to Applications" looks at and copies on (a test brings a made-up one). */
+  place?: PlaceEffects;
   /** What a test changes about updates: the site's answers, the key, the kind of app it is, where files go. */
   update?: { fetch?: typeof fetch; key?: string; info?: AppInfo | null; dir?: string; platform?: string };
 }
@@ -71,6 +74,9 @@ Usage:
   files-direct menu install | remove | status      add or take out "Send with Files Direct" in Finder (Mac) or File Explorer (Windows)
   files-direct update check | install [--json]      for the Files Direct app: look for a newer version, or install it (checked against our own key first)
   files-direct app remove                           for the Files Direct app on a Mac: take out its menu entry and every folder it made
+  files-direct app place [--original <path>] [--json]   for the Files Direct app on a Mac: say whether it should offer to move itself to Applications (and where to)
+  files-direct app decline [--original <path>]      for the Files Direct app on a Mac: remember that it was asked about this place and the answer was "Not now"
+  files-direct app move --wait-for <process> [--original <path>] [--json]   for the Files Direct app on a Mac: copy it into Applications, then open that copy once the app has quit
   files-direct mcp [--allow <folder>]...        run as a local MCP server for an assistant (talks over stdin and stdout)
   files-direct version
 
@@ -225,6 +231,7 @@ export async function runCli(argv: string[], io: Io): Promise<number> {
         'paths-stdin': { type: 'boolean' },
         launcher: { type: 'string' },
         'wait-for': { type: 'string' },
+        original: { type: 'string' },
         saved: { type: 'boolean' },
         remember: { type: 'boolean' },
         name: { type: 'string' },
@@ -242,7 +249,7 @@ export async function runCli(argv: string[], io: Io): Promise<number> {
     return 2;
   };
   if (command === 'menu') return runMenu(args.positionals, io, { app: Boolean(v.app), launcher: v.launcher });
-  if (command === 'app') return runApp(args.positionals, io);
+  if (command === 'app') return runApp(args.positionals, io, { json, original: v.original, waitFor: v['wait-for'] });
   if (command === 'open' && v.detach) return detach(rest, io);
   const origin = originFrom(v.site, io.env);
   const lane0 = io.env.FD_TEST_LANE_TOKEN;
@@ -474,9 +481,10 @@ async function readStdin(): Promise<Uint8Array> {
 }
 
 /** "app remove": for the Mac app, which has no uninstaller of its own. Takes out the Quick Action and every folder and file the app made. */
-async function runApp(words: string[], io: Io): Promise<number> {
+async function runApp(words: string[], io: Io, o: { json: boolean; original?: string; waitFor?: string }): Promise<number> {
+  if (words[0] === 'place' || words[0] === 'decline' || words[0] === 'move') return runPlace(words, io, o);
   if (words[0] !== 'remove' || words.length !== 1) {
-    io.err('Say what to do: app remove. Run files-direct help.');
+    io.err('Say what to do: app remove, app place, app decline or app move. Run files-direct help.');
     return 2;
   }
   const fx = io.menu ?? nodeEffects(io.env);
@@ -490,6 +498,54 @@ async function runApp(words: string[], io: Io): Promise<number> {
   } catch (e) {
     io.err(e instanceof Error ? e.message : String(e));
     return 1;
+  }
+}
+
+/**
+ * "app place", "app decline" and "app move": the Mac app offering to move itself to Applications. The menu-bar program asks "place" at every start, shows the question when the answer
+ * is yes, and then says "move" (the person chose Move to Applications) or "decline" (Not now). The rules are in cli/src/place.ts. --original is where the system says a translocated
+ * copy really is.
+ */
+async function runPlace(words: string[], io: Io, o: { json: boolean; original?: string; waitFor?: string }): Promise<number> {
+  const what = words[0] as 'place' | 'decline' | 'move';
+  const say = (e: Record<string, unknown>, text: string) => io.out(o.json ? JSON.stringify({ event: 'place', ...e, at: new Date().toISOString() }) : text);
+  const fail = (reason: string, text: string, code = 1) => {
+    if (o.json) io.out(JSON.stringify({ event: 'failed', reason, message: text, at: new Date().toISOString() }));
+    else io.err(text);
+    return code;
+  };
+  if (words.length !== 1) return fail('usage', 'Say what to do: app place, app decline or app move. Run files-direct help.', 2);
+  const bundle = io.update && 'info' in io.update ? io.update.info?.bundle : io.program ? readAppInfo(io.program.script)?.bundle : undefined;
+  if (!bundle) return fail('place_not_app', 'Only the Files Direct app on a Mac moves itself to Applications.');
+  // the path comes from the menu-bar program, which asked the system; it must still look like this app
+  if (o.original !== undefined && (!o.original.startsWith('/') || o.original.includes('\0') || !o.original.endsWith('/' + MAC_APP))) return fail('usage', '--original takes the full path of Files Direct.app.', 2);
+  const fx = io.place ?? nodePlaceEffects(io.env);
+  const folder = dataDir(io.env);
+  const file = join(folder, DECLINE_FILE);
+  try {
+    const f = await placeFacts(fx, folder, { bundle, ...(o.original === undefined ? {} : { original: o.original }) });
+    if (what === 'decline') {
+      await fx.write(file, addDecline(await fx.read(file), locationKey(f)));
+      say({ declined: locationKey(f) }, 'Noted: Files Direct will not ask again about moving from this place.');
+      return 0;
+    }
+    if (what === 'place') {
+      const p = decidePlace(f);
+      const item = menuItem(f);
+      say({ ...p, ...(item ? { menuItem: item } : {}) }, p.ask ? 'Files Direct can move itself to ' + p.target + '.' : 'Files Direct does not need to move (' + p.reason + ').');
+      return 0;
+    }
+    // the person said yes, so an earlier "Not now" no longer counts
+    const place = decidePlace({ ...f, declined: [] });
+    if (!place.ask) return fail('move_not_needed', 'Files Direct is already where it should be (' + place.reason + ').');
+    const pid = Number(o.waitFor);
+    if (!Number.isInteger(pid) || pid < 1) return fail('usage', 'app move takes --wait-for <the number of the running Files Direct>.', 2);
+    const staged = await fx.stage(place.source, dirname(place.target));
+    startMove({ pid, place, staged, spawnFn: io.spawn });
+    say({ state: 'moving', target: place.target, ...(place.eject ? { eject: place.eject } : {}) }, 'Files Direct is moving to ' + place.target + ' and will open again.');
+    return 0;
+  } catch (e) {
+    return fail('place_failed', e instanceof Error ? e.message : String(e));
   }
 }
 

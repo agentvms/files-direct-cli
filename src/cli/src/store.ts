@@ -18,8 +18,11 @@ export function dataDir(env: Record<string, string | undefined>, platform: strin
   return join(env.XDG_DATA_HOME ?? join(home, '.local', 'share'), 'files-direct');
 }
 
-/** The files the program itself writes in the data folder (devices.json here, listen.pid in cli/src/listen.ts). */
-export const APP_DATA_FILES = ['devices.json', 'listen.pid'] as const;
+/** The file that remembers where the Mac app was asked to move itself to Applications and the person said "Not now" (cli/src/place.ts). It stays on this computer. */
+export const DECLINE_FILE = 'place-declined.json';
+
+/** The files the program itself writes in the data folder (devices.json here, listen.pid in cli/src/listen.ts, the declined moves above). */
+export const APP_DATA_FILES = ['devices.json', 'listen.pid', DECLINE_FILE] as const;
 
 /**
  * What `app remove` takes out of the data folder. The system's own place is the app's alone (its name is in the path), so all of it goes. A folder the person named with FILES_DIRECT_DATA

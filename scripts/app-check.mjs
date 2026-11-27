@@ -1,6 +1,6 @@
 // The checks of the double-click app (files-direct-34), run by .github/workflows/desktop-app.yml on GitHub's own macOS and Windows machines, one step at a time:
 //   node scripts/app-check.mjs <step>
-// mac-app | mac-update | win-app | win-hostile | win-update | selftest. Everything is for the runner's user only: no administrator, nothing system-wide, and everything a step
+// mac-dmg | mac-app | mac-update | win-app | win-hostile | win-update | selftest. Everything is for the runner's user only: no administrator, nothing system-wide, and everything a step
 // installs it removes again, with a listing of the places an app could leave something, taken before and after, that has to come out the same.
 // Nothing here touches the real site: the program is given a stand-in room service (scripts/stub-rooms.mjs) through FILES_DIRECT_ORIGIN, and updates come from a stand-in
 // feed signed with a key made for this run and thrown away.
@@ -11,6 +11,7 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, 
 import { homedir, tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { entry, fileNames, keygen, makeFeed, signFeed } from './app-feed.mjs';
+import { checkDmgFolder } from './dmg-layout.mjs';
 
 const WIN = process.platform === 'win32';
 const MAC = process.platform === 'darwin';
@@ -253,6 +254,25 @@ const quarantine = (p) => run('xattr', ['-w', 'com.apple.quarantine', '0081;' + 
 
 function macStop() {
   for (const pid of macRunning()) run('kill', [pid]);
+}
+
+/** The built disk image, mounted read-only and not shown in the Finder: the same layout checks as the unit test makes on the folder before it is packed (scripts/dmg-layout.mjs, checkDmgFolder). */
+async function macDmg() {
+  mkdirSync(WORK, { recursive: true });
+  const dmgName = fileNames(version()).download[TARGET];
+  const mnt = join(WORK, 'mnt-layout');
+  mkdirSync(mnt, { recursive: true });
+  const att = run('hdiutil', ['attach', '-nobrowse', '-readonly', '-quiet', '-mountpoint', mnt, join(OUT, dmgName)]);
+  ok(att.status === 0, 'the disk image mounts read-only' + (att.status ? ': ' + att.stderr : ''));
+  if (att.status !== 0) return;
+  try {
+    note('the disk image holds: ' + readdirSync(mnt).sort().join(', ') + '; the background folder holds: ' + (existsSync(join(mnt, '.background')) ? readdirSync(join(mnt, '.background')).join(', ') : 'nothing'));
+    const found = checkDmgFolder(mnt);
+    ok(found.length === 0, 'the disk image opens to the app, the Applications link, the background picture and the window layout' + (found.length ? ': ' + found.join('; ') : ''));
+    ok(existsSync(join(mnt, 'Applications')), 'the Applications link leads somewhere on this machine (/Applications)');
+  } finally {
+    run('hdiutil', ['detach', '-quiet', mnt]);
+  }
 }
 
 async function macApp() {
@@ -589,7 +609,7 @@ async function selftest() {
   stub.stop();
 }
 
-const steps = { 'mac-app': macApp, 'mac-update': macUpdate, 'win-app': winApp, 'win-hostile': winHostile, 'win-update': winUpdate, selftest };
+const steps = { 'mac-dmg': macDmg, 'mac-app': macApp, 'mac-update': macUpdate, 'win-app': winApp, 'win-hostile': winHostile, 'win-update': winUpdate, selftest };
 if (typeof process !== 'undefined' && process.argv?.[1] && import.meta.url === new URL('file://' + (WIN ? '/' : '') + process.argv[1].replace(/\\/g, '/')).href) {
   const step = steps[process.argv[2]];
   if (!step) {

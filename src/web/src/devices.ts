@@ -11,13 +11,15 @@ const VERSION = 1;
 export interface SavedDevice {
   /** The pair id: what our server knows the pair by (a hash of the secret). */
   id: string;
-  /** The name that device gave itself. */
+  /** The name this browser shows that device by: the name it gave itself, or the nickname this browser chose for it (`nick`). Never this browser's own name (`DeviceStore.self`). */
   name: string;
   secret: string;
   /** Which side of the pair this browser is (the one that offered is "a"). */
   side: PairSide;
   /** When it was saved (ms). */
   made: number;
+  /** What this person calls that device, when it is not the name the device gave itself (files-direct-45). Kept in this browser only, never said to the other device. Older entries have none. */
+  nick?: string;
 }
 
 export interface DeviceStore {
@@ -38,7 +40,8 @@ function valid(d: unknown): SavedDevice | null {
   const name = cleanDeviceName(r.name);
   if (typeof r.id !== 'string' || !PAIR_ID_PATTERN.test(r.id) || typeof r.secret !== 'string' || !PAIR_SECRET_PATTERN.test(r.secret) || !name) return null;
   if (!PAIR_SIDES.includes(r.side as PairSide)) return null;
-  return { id: r.id, name, secret: r.secret, side: r.side as PairSide, made: typeof r.made === 'number' && Number.isFinite(r.made) ? r.made : 0 };
+  const nick = cleanDeviceName(r.nick);
+  return { id: r.id, name, secret: r.secret, side: r.side as PairSide, made: typeof r.made === 'number' && Number.isFinite(r.made) ? r.made : 0, ...(nick ? { nick } : {}) };
 }
 
 /** What is kept. A storage that cannot be read, text that is not JSON, or a version this page does not know gives an empty list; a bad entry is dropped, the rest stay. */
@@ -86,12 +89,15 @@ export function removeDevice(kv: Keeper, id: string): boolean {
   return write(kv, { ...store, devices: store.devices.filter((d) => d.id !== id) });
 }
 
-/** The name a saved device gave itself now (it was renamed there). True when the stored name changed; false when it was the same, the device is gone, or the browser would not keep it. */
+/**
+ * The name a saved device gave itself now (it was renamed there). True when the stored name changed; false when it was the same, the device is gone, or the browser would not keep it.
+ * A device this person gave a nickname keeps it: the name it announces is not shown instead.
+ */
 export function renameDevice(kv: Keeper, id: string, name: string): boolean {
   const clean = cleanDeviceName(name);
   const store = readStore(kv);
   const have = store.devices.find((d) => d.id === id);
-  if (!clean || !have || have.name === clean) return false;
+  if (!clean || !have || have.nick || have.name === clean) return false;
   return write(kv, { ...store, devices: store.devices.map((d) => (d.id === id ? { ...d, name: clean } : d)) });
 }
 

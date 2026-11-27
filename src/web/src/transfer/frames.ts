@@ -44,12 +44,12 @@ export type Control =
    * From the receiver: the manifest is read and the person is being asked. Tells the sender this page waits for a yes.
    * `pv: 1` (files-direct-32): this page can show small previews of photos, so the sender may send them now. A page that predates it never says so and never gets one.
    */
-  | { t: 'asking'; b: number; pv?: 1 }
+  | { t: 'asking'; b: number; pv?: 1; /** files-direct-47: this page also draws a video's own frame as its poster (needs `pv`). */ vp?: 1; /** and takes a few small frames of it for the hover hint (needs `vp`). */ vs?: 1 }
   /**
    * From the sender, after the manifest and before the answer, only to a receiver that said `pv`: a small picture of file `i` (a photo), one frame each, the whole frame at most PIECE_SIZE.
    * `data` is the picture, base64. The receiver drops anything out of bounds without a word (docs/PROTOCOL.md, "Previews").
    */
-  | { t: 'preview'; b: number; i: number; type: string; w: number; h: number; data: string }
+  | { t: 'preview'; b: number; i: number; type: string; w: number; h: number; data: string; /** files-direct-47: not the poster but scrub frame number `s` (1 to 4) of a video whose poster came first. */ s?: number }
   /** From the receiver: yes, send this batch. Nothing is sent before it. */
   | { t: 'accept'; b: number }
   /** From the receiver: no thanks. Nothing was sent. */

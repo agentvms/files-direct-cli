@@ -33,6 +33,13 @@ export function landingPath(raw: unknown): string | undefined {
   return path;
 }
 
+/**
+ * The page a count names (files-direct-44) is chosen by the Worker, which knows the route it rendered: the home page, a room (`/r/`), a report (`/report/`), one of
+ * the app's own pages, a page of words by its own address, or `/other` for any address it has no page for. An address a person typed or followed can hold a file
+ * name or a code (`/secret-plan.pdf`, `/123456789`), and a count must never. The page carries no list of pages.
+ */
+export const OTHER_PAGE_PATH = '/other';
+
 export const FAIL_REASONS = ['damaged', 'incomplete', 'unreadable', 'lost', 'sender_left', 'relay_limit', 'month_stop'] as const;
 export type FailReason = (typeof FAIL_REASONS)[number];
 
@@ -45,6 +52,12 @@ export const CANDIDATE_KINDS = ['host', 'mdns', 'srflx', 'prflx', 'relay'] as co
 export type CandidateKind = (typeof CANDIDATE_KINDS)[number];
 
 /** Why a connection did not go direct, from a fixed list. `none`: it did. */
+/** The later files the page fetches (web/src/lazy.ts), by a fixed name of ours. A failed fetch is reported with one of these in its message and nothing else about the file. */
+export const CHUNK_NAMES = ['mount', 'connection', 'saved-screen', 'reports-panel', 'feedback-box', 'qr', 'zip'] as const;
+export type ChunkName = (typeof CHUNK_NAMES)[number];
+/** The one message a failed fetch of a later file leaves the page with. Any other text of an error is dropped (web/src/scrub.ts). */
+export const chunkLoadMessage = (name: ChunkName): string => 'lazy chunk load failed: ' + name;
+
 export const CONNECTION_FAIL_REASONS = ['none', 'no_remote_candidates', 'mdns_only', 'same_network_blocked', 'checks_failed', 'timeout'] as const;
 export type ConnectionFailReason = (typeof CONNECTION_FAIL_REASONS)[number];
 
@@ -98,4 +111,8 @@ export interface ClientTelemetryConfig {
   host: string;
   environment: string;
   release: string;
+  /** The page this document is, as the Worker named it when it rendered it (`OTHER_PAGE_PATH` when it has no page of its own). Every count names this page, never the address in the bar. */
+  page: string;
+  /** A page a test run asked for: its counts are marked `factory_probe` so they can be left out. */
+  probe?: true;
 }

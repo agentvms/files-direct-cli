@@ -43,6 +43,9 @@ export function generatePairSecret(): string {
   return base64url(bytes);
 }
 
+/** While a saved device has not come into the room it was asked to, the page asks again this often (files-direct-49). It costs one small frame to the pair's slot each time; nothing is kept. */
+export const SAVED_ASK_AGAIN_MS = 4000;
+
 /** A fresh nonce for one meeting: 128 random bits. */
 export function generateNonce(): string {
   const bytes = new Uint8Array(16);

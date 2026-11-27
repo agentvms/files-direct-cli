@@ -378,10 +378,10 @@ export class Run {
   }
 
   private failedToJoin(why: JoinFailure, wait?: number): void {
-    const map: Record<JoinFailure, Reason> = { gone: 'room_gone', full: 'room_full', busy: 'too_many_rooms', paused: 'rooms_paused', network: 'network', 'wrong-code': 'wrong_code', 'slow-down': 'slow_down' };
+    const map: Record<JoinFailure, Reason> = { gone: 'room_gone', full: 'room_full', crowded: 'room_full', busy: 'too_many_rooms', paused: 'rooms_paused', network: 'network', 'wrong-code': 'wrong_code', 'slow-down': 'slow_down' };
     const reason = map[why];
     if (wait !== undefined && (reason === 'too_many_rooms' || reason === 'slow_down')) this.note({ event: 'wait', seconds: Math.ceil(wait), why: reason });
-    this.finish(reason, { wait });
+    this.finish(reason, { wait: why === 'crowded' ? undefined : wait }); // for a full room the number is how many devices it holds, not a wait
   }
 
   private makeConnection(role: 'sender' | 'receiver'): void {

@@ -108,7 +108,7 @@ export interface Side {
   files: Map<string, Blob>;
 }
 
-export type SideExtra = { window?: number; now?: () => number; ask?: boolean; after?: SessionOptions['after']; previews?: boolean; makePreview?: SessionOptions['makePreview']; relay?: boolean };
+export type SideExtra = { window?: number; now?: () => number; ask?: boolean; after?: SessionOptions['after']; previews?: boolean; makePreview?: SessionOptions['makePreview']; posters?: boolean; scrubs?: boolean; makePoster?: SessionOptions['makePoster']; makeScrub?: SessionOptions['makeScrub']; relay?: boolean };
 
 export function makeSide(end: End, odd: boolean, blockSize: number, extra: SideExtra = {}): Side {
   const events: TransferEvent[] = [];
@@ -122,6 +122,10 @@ export function makeSide(end: End, odd: boolean, blockSize: number, extra: SideE
     ask: extra.ask,
     previews: extra.previews,
     makePreview: extra.makePreview,
+    posters: extra.posters,
+    scrubs: extra.scrubs,
+    makePoster: extra.makePoster,
+    makeScrub: extra.makeScrub,
     relay: extra.relay,
     after: extra.after,
     blockSize,

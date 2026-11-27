@@ -65,6 +65,8 @@ jobs:
       - run: npm ci
       - name: Build the app and the files a person downloads
         run: node scripts/app-build.mjs ${{ matrix.target }} build
+      - name: Open the disk image read-only and check its window (the app, the Applications link, the background picture, the layout)
+        run: node scripts/app-check.mjs mac-dmg
       - name: Download, open, run, send two files and a folder, a hostile name through the Quick Action, Remove
         run: node scripts/app-check.mjs mac-app
       - name: Update from a stand-in feed (a newer build is installed; a changed, wrongly signed, older or longer one is refused), then Remove

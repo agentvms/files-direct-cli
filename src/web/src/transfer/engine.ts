@@ -3,12 +3,12 @@
  * and is tested in node with a stand-in channel. A Session is one data channel; every frame names its batch, so a
  * batch each way can run at once.
  */
-import { BLOCK_SIZE, HIGH_WATER, LOW_WATER, MAX_BLOCK_SIZE, MAX_BLOCK_TRIES, PIECE_SIZE, PREVIEW_ONE_MS, PREVIEW_TOTAL_MS, WINDOW_BLOCKS, previewLimits, type PreviewLimits } from '../../../shared/config.ts';
+import { BLOCK_SIZE, HIGH_WATER, LOW_WATER, MAX_BLOCK_SIZE, MAX_BLOCK_TRIES, PIECE_SIZE, POSTER_ONE_MS, PREVIEW_ONE_MS, PREVIEW_TOTAL_MS, SCRUB_BYTE_BUDGET, SCRUB_LIMITS, WINDOW_BLOCKS, previewLimits, type PreviewLimits } from '../../../shared/config.ts';
 import { cleanNote } from '../../../shared/ask.ts';
 import { type Control, type FileInfo, type PairWire, DIGEST_BYTES, PAIR_WIRE_MAX, decodePiece, encodePiece, fingerprint, fromHex, sameBytes, sha256, toHex } from './frames.ts';
 import { Meter } from './meter.ts';
 import { cleanPaths } from './paths.ts';
-import { type PreviewImage, fromBase64, isPreviewKind, isPreviewSource, isPreviewType, looksLike, toBase64 } from './preview.ts';
+import { type PreviewImage, fromBase64, isPosterKind, isPosterSource, isPreviewKind, isPreviewSource, isPreviewType, looksLike, toBase64 } from './preview.ts';
 import { BlockRecord } from './record.ts';
 import type { BlockSink, SinkFactory } from './sink.ts';
 
@@ -50,7 +50,7 @@ export type TransferEvent =
   /** Receiver: a batch was offered and nothing moves until the person accepts or declines it. */
   | { k: 'offered'; b: number; files: number; bytes: number }
   /** Receiver: a small picture of file `i` came with the offer, inside the limits (the page still checks that it draws). Plain data, never sent anywhere but to the screen. */
-  | { k: 'preview'; b: number; i: number; blob: Blob; w: number; h: number }
+  | { k: 'preview'; b: number; i: number; blob: Blob; w: number; h: number; /** A frame of a video (its poster, or a scrub frame of it), not of a photo. */ video?: boolean; /** A scrub frame of a video's poster (1 to SCRUB_LIMITS.frames), not the poster itself. */ scrub?: number }
   /** The other side is asking this one for files. `note` is what the asker wrote, cleaned here like a file name ("" when there is none). Nothing is sent until the person picks files. */
   | { k: 'asked'; b: number; note: string }
   /** Sender: the other side said no thanks. Nothing was sent. */
@@ -72,6 +72,14 @@ export interface SessionOptions {
   previews?: boolean;
   /** Sender: makes the small picture of a file for a receiver that takes them, or gives null (it cannot be decoded, it is too big, ...). Runs one file at a time. */
   makePreview?: (src: Sendable, limits: PreviewLimits) => Promise<PreviewImage | null>;
+  /** Receiver: this page can draw a video's poster (`vp` on `asking`). Needs `previews`. A sender that predates it never sends one. */
+  posters?: boolean;
+  /** Receiver: this page can show scrub frames of a video (`vs` on `asking`): a fine pointer with hover and no wish for less motion. Needs `posters`. */
+  scrubs?: boolean;
+  /** Sender: takes one frame of a video file for a receiver that draws posters, or gives null. It runs where a video can be decoded (the page, not the transfer worker). */
+  makePoster?: (src: Sendable, limits: PreviewLimits) => Promise<PreviewImage | null>;
+  /** Sender: takes `count` small frames of a video, spread over its length (never the poster's own place twice), or gives fewer or none. */
+  makeScrub?: (src: Sendable, count: number, limits: { edge: number; bytes: number }) => Promise<PreviewImage[]>;
   /** This connection goes through our servers: previews stay tiny. Can change later (setRelay). */
   relay?: boolean;
   blockSize?: number;
@@ -115,6 +123,9 @@ interface OutBatch {
   asked: boolean;
   /** Previews are being made for this batch (the receiver said it takes them). */
   previewing: boolean;
+  /** The receiver also draws video posters (`vp`), and takes scrub frames of them (`vs`). */
+  posters: boolean;
+  scrubs: boolean;
 }
 
 /** A request for files this side made: it is answered when the other page says it is showing it. */
@@ -138,6 +149,8 @@ interface InFile {
   got: number;
   /** A preview of this file was taken. */
   previewed: boolean;
+  /** Scrub frames of this video taken so far (by number). */
+  scrubbed: Set<number>;
 }
 
 interface InBatch {
@@ -154,6 +167,9 @@ interface InBatch {
   accepted: boolean;
   /** Previews taken so far (at most the route's count). */
   previews: number;
+  /** Videos that have scrub frames, and how many bytes of them came (the budget of SCRUB_LIMITS). */
+  scrubVideos: number;
+  scrubBytes: number;
 }
 
 interface Assembling {
@@ -177,6 +193,10 @@ export class Session {
   private readonly ask: boolean;
   private readonly previews: boolean;
   private readonly makePreview: SessionOptions['makePreview'];
+  private readonly posters: boolean;
+  private readonly scrubs: boolean;
+  private readonly makePoster: SessionOptions['makePoster'];
+  private readonly makeScrub: SessionOptions['makeScrub'];
   private relay: boolean;
   private readonly window: number;
   private readonly now: () => number;
@@ -203,6 +223,10 @@ export class Session {
     this.ask = o.ask ?? false;
     this.previews = (o.previews ?? false) && this.ask;
     this.makePreview = o.makePreview;
+    this.posters = (o.posters ?? false) && this.previews;
+    this.scrubs = (o.scrubs ?? false) && this.posters;
+    this.makePoster = o.makePoster;
+    this.makeScrub = o.makeScrub;
     this.relay = o.relay ?? false;
     this.after = o.after;
     this.window = o.window ?? WINDOW_BLOCKS;
@@ -247,6 +271,8 @@ export class Session {
       accepted: false,
       asked: false,
       previewing: false,
+      posters: false,
+      scrubs: false,
     };
     this.out.set(b, batch);
     const infos: FileInfo[] = files.map((f, i) => ({ i, name: f.name, size: f.size, type: f.type }));
@@ -550,7 +576,12 @@ export class Session {
         const batch = this.out.get(msg.b);
         if (batch) {
           batch.asked = true;
-          if (msg.pv === 1) this.startPreviews(batch);
+          if (msg.pv === 1) {
+            // a receiver that draws video posters says so on its own (an older sender never looks at it); scrub frames only come with posters
+            batch.posters = msg.vp === 1;
+            batch.scrubs = batch.posters && msg.vs === 1;
+            this.startPreviews(batch);
+          }
         } else if (!this.gone.has(msg.b)) this.violation(undefined, 'v18');
         return;
       }
@@ -611,6 +642,7 @@ export class Session {
         recheck: new Set(),
         got: 0,
         previewed: false,
+        scrubbed: new Set(),
       };
     });
     const batch: InBatch = {
@@ -625,11 +657,13 @@ export class Session {
       dead: false,
       accepted: !this.ask,
       previews: 0,
+      scrubVideos: 0,
+      scrubBytes: 0,
     };
     this.inn.set(m.b, batch);
     this.emit({ k: 'started', b: m.b, dir: 'in', files: files.map((f) => ({ i: f.info.i, name: f.info.name, size: f.info.size })), storage: this.sinks.kind });
     if (this.ask) {
-      this.control(this.previews ? { t: 'asking', b: m.b, pv: 1 } : { t: 'asking', b: m.b });
+      this.control(this.previews ? { t: 'asking', b: m.b, pv: 1, ...(this.posters ? { vp: 1 as const } : {}), ...(this.scrubs ? { vs: 1 as const } : {}) } : { t: 'asking', b: m.b });
       this.emit({ k: 'offered', b: m.b, files: files.length, bytes: batch.total });
     } else this.control({ t: 'accept', b: m.b });
   }
@@ -645,14 +679,37 @@ export class Session {
     if (!batch || batch.dead || batch.accepted) return;
     const limits = previewLimits(this.relay);
     const file = Number.isSafeInteger(m.i) ? batch.files[m.i] : undefined;
-    if (!file || file.previewed || batch.previews >= limits.count || !isPreviewKind(file.info.type)) return;
+    if (!file) return;
+    // a video's frame is taken only when this page said it draws them (`vp`); every other check is the photo's
+    const poster = isPosterKind(file.info.type);
+    if (poster ? !this.posters : !isPreviewKind(file.info.type)) return;
+    if (m.s !== undefined) return this.onScrub(m, batch, file, poster);
+    if (file.previewed || batch.previews >= limits.count) return;
     if (!isPreviewType(m.type) || !Number.isSafeInteger(m.w) || !Number.isSafeInteger(m.h) || m.w < 1 || m.h < 1 || m.w > limits.edge || m.h > limits.edge) return;
     if (typeof m.data !== 'string' || m.data.length > PIECE_SIZE) return;
     const bytes = fromBase64(m.data);
     if (!bytes || bytes.length === 0 || bytes.length > limits.bytes || !looksLike(m.type, bytes)) return;
     file.previewed = true;
     batch.previews++;
-    this.emit({ k: 'preview', b: m.b, i: m.i, blob: new Blob([bytes as BlobPart], { type: m.type }), w: m.w, h: m.h });
+    this.emit({ k: 'preview', b: m.b, i: m.i, blob: new Blob([bytes as BlobPart], { type: m.type }), w: m.w, h: m.h, ...(poster ? { video: true } : {}) });
+  }
+
+  /**
+   * Scrub frame `m.s` of a video whose poster came first (files-direct-47, I). Out of bounds is dropped without a word like any preview: not asked for (`vs`), through our servers, no poster yet,
+   * a number outside 1..SCRUB_LIMITS.frames or one taken already, more videos than SCRUB_LIMITS.videos, a frame over the edge or byte limit, more bytes than the batch's budget, or not what its type says.
+   */
+  private onScrub(m: Extract<Control, { t: 'preview' }>, batch: InBatch, file: InFile, poster: boolean): void {
+    const s = m.s;
+    if (!poster || !this.scrubs || this.relay || !file.previewed || typeof s !== 'number' || !Number.isSafeInteger(s) || s < 1 || s > SCRUB_LIMITS.frames || file.scrubbed.has(s)) return;
+    if (file.scrubbed.size === 0 && batch.scrubVideos >= SCRUB_LIMITS.videos) return;
+    if (!isPreviewType(m.type) || !Number.isSafeInteger(m.w) || !Number.isSafeInteger(m.h) || m.w < 1 || m.h < 1 || m.w > SCRUB_LIMITS.edge || m.h > SCRUB_LIMITS.edge) return;
+    if (typeof m.data !== 'string' || m.data.length > PIECE_SIZE) return;
+    const bytes = fromBase64(m.data);
+    if (!bytes || bytes.length === 0 || bytes.length > SCRUB_LIMITS.bytes || batch.scrubBytes + bytes.length > SCRUB_BYTE_BUDGET || !looksLike(m.type, bytes)) return;
+    if (file.scrubbed.size === 0) batch.scrubVideos++;
+    file.scrubbed.add(s);
+    batch.scrubBytes += bytes.length;
+    this.emit({ k: 'preview', b: m.b, i: m.i, blob: new Blob([bytes as BlobPart], { type: m.type }), w: m.w, h: m.h, video: true, scrub: s });
   }
 
   /**
@@ -661,7 +718,7 @@ export class Session {
    */
   private startPreviews(batch: OutBatch): void {
     const make = this.makePreview;
-    if (!make || batch.previewing || batch.dead || batch.accepted) return;
+    if ((!make && !(batch.posters && this.makePoster)) || batch.previewing || batch.dead || batch.accepted) return;
     batch.previewing = true;
     const over = () => batch.dead || batch.accepted || this.closed;
     const task = (async () => {
@@ -669,13 +726,16 @@ export class Session {
       const stop = this.after?.(() => (timeUp = true), PREVIEW_TOTAL_MS);
       let sent = 0;
       let tried = 0;
+      let scrubbed = 0;
       try {
         for (const [i, f] of batch.files.entries()) {
           const limits = previewLimits(this.relay);
           if (over() || timeUp || sent >= limits.count || tried >= limits.count * 3) break;
-          if (f.state === 'failed' || !isPreviewSource(f.src.type, f.src.size)) continue;
+          // a video gets its poster only for a receiver that said it draws them, and only from a page that can decode video (the transfer worker cannot: it asks the page)
+          const video = isPosterSource(f.src.type, f.src.size);
+          if (f.state === 'failed' || !(video ? batch.posters && !!this.makePoster : !!make && isPreviewSource(f.src.type, f.src.size))) continue;
           tried++;
-          const image = await this.within(make(f.src, limits).catch(() => null), PREVIEW_ONE_MS);
+          const image = await this.within((video ? this.makePoster!(f.src, limits) : make!(f.src, limits)).catch(() => null), video ? POSTER_ONE_MS : PREVIEW_ONE_MS);
           const now = previewLimits(this.relay); // the route may have changed while the picture was made
           if (over() || timeUp || !image || !isPreviewType(image.type) || image.bytes.length === 0 || image.bytes.length > now.bytes || image.w > now.edge || image.h > now.edge || image.w < 1 || image.h < 1) continue;
           const frame = JSON.stringify({ t: 'preview', b: batch.b, i, type: image.type, w: image.w, h: image.h, data: toBase64(image.bytes) } satisfies Control);
@@ -684,6 +744,22 @@ export class Session {
           if (over()) break;
           if (this.ch.readyState === 'open') this.ch.send(frame);
           sent++;
+          // the hover hint of a computer: a handful of very small frames, only on the direct route, only for a video that has its poster
+          if (video && batch.scrubs && this.makeScrub && !this.relay && scrubbed < SCRUB_LIMITS.videos) {
+            const small = { edge: SCRUB_LIMITS.edge, bytes: SCRUB_LIMITS.bytes };
+            const frames = (await this.within(this.makeScrub(f.src, SCRUB_LIMITS.frames, small).catch(() => []), POSTER_ONE_MS * 2)) ?? [];
+            let n = 0;
+            for (const fr of frames.slice(0, SCRUB_LIMITS.frames)) {
+              if (over() || timeUp || this.relay || !isPreviewType(fr.type) || fr.bytes.length === 0 || fr.bytes.length > small.bytes || fr.w > small.edge || fr.h > small.edge || fr.w < 1 || fr.h < 1) continue;
+              const sf = JSON.stringify({ t: 'preview', b: batch.b, i, type: fr.type, w: fr.w, h: fr.h, data: toBase64(fr.bytes), s: ++n } satisfies Control);
+              if (sf.length > PIECE_SIZE) continue;
+              await this.drain();
+              // the route may have turned into the one through our servers while the buffer was full: look again right before sending
+              if (over() || this.relay) break;
+              if (this.ch.readyState === 'open') this.ch.send(sf);
+            }
+            if (n > 0) scrubbed++;
+          }
         }
       } catch {
         // a preview is never worth a failure: whatever went wrong, there is simply no picture

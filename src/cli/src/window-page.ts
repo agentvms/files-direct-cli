@@ -1,5 +1,5 @@
 import { ASK_NOTE_MAX_CHARS } from '../../shared/config.ts';
-import { COLOURS, rootVars } from '../../shared/tokens.ts';
+import { rootVars } from '../../shared/tokens.ts';
 import { DEVICE_NAME_MAX } from '../../shared/pair.ts';
 import { SAVED } from '../../web/src/saved-copy.ts';
 import { APP_SAVED } from './window-copy.ts';
@@ -40,7 +40,7 @@ input[type=text]{flex:1;min-width:0;min-height:40px;padding:0 12px;border:1px so
 button{min-height:40px;padding:0 16px;border-radius:var(--fd-radius-control);border:1px solid var(--fd-border-strong);background:var(--fd-parcel);color:var(--fd-ink-primary);font:inherit;font-weight:600;cursor:pointer;transition:background var(--fd-dur-fade) var(--fd-ease),border-color var(--fd-dur-fade) var(--fd-ease)}
 button:hover{border-color:var(--fd-border-hover)}
 button.primary{background:var(--fd-pine-600);border-color:var(--fd-pine-600);color:var(--fd-on-pine)}
-button.primary:hover{background:var(--fd-pine-700);border-color:var(--fd-pine-700)}
+button.primary:hover{background:var(--fd-pine-hover);border-color:var(--fd-pine-hover)}
 :focus-visible{outline:3px solid var(--fd-pine-600);outline-offset:2px}
 .status{display:flex;align-items:center;gap:8px;justify-content:center;color:var(--fd-ink-secondary);font-size:.875rem;text-align:center}
 .dot{flex:none;width:8px;height:8px;border-radius:50%;background:var(--fd-pine-live)}
@@ -242,16 +242,15 @@ tick(); setInterval(tick, 500);
 
 /** The page, for one token. `nonce` is made again for every load; the page's own style and script are the only ones its policy allows. */
 export function windowPage(nonce: string): string {
-  const canvas = COLOURS.canvas;
   return `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="referrer" content="no-referrer">
-<meta name="color-scheme" content="light">
+<meta name="color-scheme" content="light dark">
 <title>Files Direct</title>
-<style nonce="${nonce}">${rootVars()}${CSS}html{background:${canvas}}</style>
+<style nonce="${nonce}">${rootVars()}${CSS}html{background:var(--fd-canvas)}</style>
 </head>
 <body>
 <main id="main"></main>

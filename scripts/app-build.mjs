@@ -12,6 +12,7 @@ import { join, resolve } from 'node:path';
 import { build } from 'esbuild';
 import { fileNames } from './app-feed.mjs';
 import { iconPng } from './icon-png.mjs';
+import { VOLUME_NAME, buildDmgFolder } from './dmg-layout.mjs';
 
 export const NODE_VERSION = '22.23.5';
 /** Official Node archives (https://nodejs.org/dist/v<version>/SHASUMS256.txt) and the SHA-256 each one must have. */
@@ -151,17 +152,17 @@ function buildMacApp(target, stage, work, info) {
   return app;
 }
 
-/** The .dmg: lzma packing first; when this machine will not make it, the next way, and the one that was used is said. */
+/**
+ * The .dmg: the folder is made by scripts/dmg-layout.mjs (the app, the link to Applications, the background picture and the .DS_Store that lays the window out), and hdiutil only packs it:
+ * lzma first; when this machine will not make it, the next way, and the one that was used is said.
+ */
 function makeDmg(app, out, work) {
-  const folder = join(work, 'dmg-folder');
-  rmSync(folder, { recursive: true, force: true });
-  mkdirSync(folder, { recursive: true });
-  cpSync(app, join(folder, 'Files Direct.app'), { recursive: true, verbatimSymlinks: true });
+  const folder = buildDmgFolder({ app, folder: join(work, 'dmg-folder') });
   const tries = [
-    ['ULMO', ['create', '-quiet', '-volname', 'Files Direct', '-srcfolder', folder, '-format', 'ULMO', '-ov', out]],
-    ['ULMO with HFS+', ['create', '-quiet', '-volname', 'Files Direct', '-srcfolder', folder, '-fs', 'HFS+', '-format', 'ULMO', '-ov', out]],
+    ['ULMO', ['create', '-quiet', '-volname', VOLUME_NAME, '-srcfolder', folder, '-format', 'ULMO', '-ov', out]],
+    ['ULMO with HFS+', ['create', '-quiet', '-volname', VOLUME_NAME, '-srcfolder', folder, '-fs', 'HFS+', '-format', 'ULMO', '-ov', out]],
     ['UDRW then ULMO', null],
-    ['ULFO', ['create', '-quiet', '-volname', 'Files Direct', '-srcfolder', folder, '-format', 'ULFO', '-ov', out]],
+    ['ULFO', ['create', '-quiet', '-volname', VOLUME_NAME, '-srcfolder', folder, '-format', 'ULFO', '-ov', out]],
   ];
   for (const [name, args] of tries) {
     rmSync(out, { force: true });
@@ -170,7 +171,7 @@ function makeDmg(app, out, work) {
       else {
         const rw = join(work, 'rw.dmg');
         rmSync(rw, { force: true });
-        sh('hdiutil', ['create', '-quiet', '-volname', 'Files Direct', '-srcfolder', folder, '-fs', 'HFS+', '-format', 'UDRW', '-ov', rw]);
+        sh('hdiutil', ['create', '-quiet', '-volname', VOLUME_NAME, '-srcfolder', folder, '-fs', 'HFS+', '-format', 'UDRW', '-ov', rw]);
         sh('hdiutil', ['convert', '-quiet', rw, '-format', 'ULMO', '-o', out]);
       }
       if (existsSync(out)) return name;
@@ -240,7 +241,7 @@ function packOptions(target, stage, work) {
     for (const fmt of ['UDZO', 'ULFO', 'ULMO']) {
       const dmg = join(work, 'app-' + fmt + '.dmg');
       try {
-        sh('hdiutil', ['create', '-quiet', '-volname', 'Files Direct', '-srcfolder', app, '-format', fmt, '-ov', dmg]);
+        sh('hdiutil', ['create', '-quiet', '-volname', VOLUME_NAME, '-srcfolder', app, '-format', fmt, '-ov', dmg]);
         note('.dmg (' + fmt + ')', statSync(dmg).size);
       } catch (e) {
         console.log('size    .dmg (' + fmt + ') could not be made on this machine: ' + String(e.message).slice(-200));
