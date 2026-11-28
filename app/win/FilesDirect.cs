@@ -658,6 +658,7 @@ namespace FilesDirect
             form.FormClosed += delegate
             {
                 forms.Remove(address);
+                if (user && !exited) StopSoon(); // a window that went without being asked leaves no engine behind
                 cleaning++; // the window's profile is still to be deleted: the run is not over until it is
                 if (forms.Count == 0) Idle();
             };
@@ -817,7 +818,8 @@ namespace FilesDirect
 
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
-            if (!finished && e.CloseReason == CloseReason.UserClosing)
+            // any way a window is closed from outside (the red button, Alt+F4, the taskbar, a program that posts a close, an installer that closes the app) asks the page first; only the end of Windows or of this program does not
+            if (!finished && e.CloseReason != CloseReason.WindowsShutDown && e.CloseReason != CloseReason.ApplicationExitCall)
             {
                 e.Cancel = true;
                 AskToClose();

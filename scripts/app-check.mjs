@@ -509,7 +509,7 @@ async function winApp() {
   // Remove: the uninstaller the menu item starts, with the tray program still running (the program closes it itself when the person chooses Remove in its menu; from Settings the uninstaller has to)
   const un = run(join(APPDIR(), 'unins000.exe'), ['/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART'], { stdio: 'ignore', timeout: 300_000 });
   ok(un.status === 0, 'the uninstaller ran silently');
-  ok(await until('the app folder to go', () => !existsSync(APPDIR()), 90_000), 'the app folder is gone');
+  ok(await winFolderGoes('after uninstalling'), 'the app folder is gone');
   sameListing(before, listing(), 'after uninstalling');
 }
 
@@ -600,7 +600,7 @@ async function winUpdate() {
   site.stop();
   for (const e of trayRunning()) run('taskkill', ['/PID', e.split(' ').pop(), '/F']);
   run(join(APPDIR(), 'unins000.exe'), ['/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART'], { stdio: 'ignore', timeout: 300_000 });
-  await until('the app folder to go', () => !existsSync(APPDIR()), 90_000);
+  await winFolderGoes('after the update test');
   sameListing(before, listing(), 'after the update test and uninstalling');
 }
 
@@ -648,8 +648,16 @@ function putStubIn(dir, outside) {
   return { log, end, real };
 }
 
-/** The windows of the app that are 480 wide and tall (the size of the Files Direct window), seen from outside the app. null when this machine would not say. */
-const MAC_WINDOWS = "ObjC.import('CoreGraphics'); const all = ObjC.deepUnwrap(ObjC.castRefToObject($.CGWindowListCopyWindowInfo($.kCGWindowListOptionAll, $.kCGNullWindowID))); JSON.stringify(all.filter(function (w) { return /Files ?Direct/.test(w.kCGWindowOwnerName || '') && w.kCGWindowBounds && w.kCGWindowBounds.Width === 480 && w.kCGWindowBounds.Height >= 760; }).map(function (w) { return { w: w.kCGWindowBounds.Width, h: w.kCGWindowBounds.Height, onscreen: Boolean(w.kCGWindowIsOnscreen) }; }))";
+/** The windows of the app that are 480 wide and at least 500 tall, seen from outside the app. null when this machine would not say. The window asks for 480 by 760 inside (788 with its title bar), and a Mac makes any
+ *  window fit its screen: on GitHub's macos-latest (arm64) the screen is 1024 by 768 with 677 free under the menu bar, so the window is 480 by 674 there (seen in the run of files-direct-60's fix-forward), and a real
+ *  Mac with a small screen does the same. Other things of the app that are 480 wide are not this tall (a hidden 500 by 500 one, bars 1024 by 30). */
+const MAC_WINDOWS = "ObjC.import('CoreGraphics'); const all = ObjC.deepUnwrap(ObjC.castRefToObject($.CGWindowListCopyWindowInfo($.kCGWindowListOptionAll, $.kCGNullWindowID))); JSON.stringify(all.filter(function (w) { return /Files ?Direct/.test(w.kCGWindowOwnerName || '') && w.kCGWindowBounds && w.kCGWindowBounds.Width === 480 && w.kCGWindowBounds.Height >= 500; }).map(function (w) { return { w: w.kCGWindowBounds.Width, h: w.kCGWindowBounds.Height, onscreen: Boolean(w.kCGWindowIsOnscreen) }; }))";
+/** Every window of the app and the screens' sizes, as the machine says them (what to read when the list above is empty or odd: the screen of a runner can be small, and a window is made to fit its screen). */
+const MAC_ALL = "ObjC.import('CoreGraphics'); ObjC.import('AppKit'); const all = ObjC.deepUnwrap(ObjC.castRefToObject($.CGWindowListCopyWindowInfo($.kCGWindowListOptionAll, $.kCGNullWindowID))); const list = $.NSScreen.screens; const screens = []; for (let i = 0; i < Number(list.count); i++) { const s = list.objectAtIndex(i); screens.push({ frame: [s.frame.size.width, s.frame.size.height], visible: [s.visibleFrame.size.width, s.visibleFrame.size.height] }); } JSON.stringify({ screens: screens, windows: all.filter(function (w) { return /Files ?Direct/.test(w.kCGWindowOwnerName || ''); }).map(function (w) { return { owner: w.kCGWindowOwnerName, name: w.kCGWindowName, layer: w.kCGWindowLayer, w: w.kCGWindowBounds && w.kCGWindowBounds.Width, h: w.kCGWindowBounds && w.kCGWindowBounds.Height, onscreen: Boolean(w.kCGWindowIsOnscreen) }; }) })";
+const macSeen = () => {
+  const r = run('osascript', ['-l', 'JavaScript', '-e', MAC_ALL]);
+  return r.status === 0 ? r.stdout.trim() : 'not readable: ' + (r.stderr || '').trim().slice(0, 200);
+};
 const macWindows = () => {
   try {
     return JSON.parse(run('osascript', ['-l', 'JavaScript', '-e', MAC_WINDOWS]).stdout.trim());
@@ -696,6 +704,7 @@ async function macWindow() {
   const wins = await until('the window', () => (macWindows()?.length ? macWindows() : null), 20_000);
   if (wins === null && macWindows() === null) note('the window list could not be read on this machine: the window itself is NOT seen here');
   else ok(wins?.length === 1, 'one window of the app, 480 wide, is on the screen list: ' + JSON.stringify(wins));
+  note('every window of the app and the screens, as this machine says them:\n' + macSeen());
   run('screencapture', ['-x', join(SHOTS, 'mac-app-window.png')]); // best effort: a runner may have no screen
 
   // the page sends the window to the outside address: the system's browser gets it and the window stays on the page
@@ -714,9 +723,12 @@ async function macWindow() {
 
   // the meeting is over (what the engine says when the page's Close is pressed): the window goes, the menu-bar program stays
   writeFileSync(stub.end, '');
-  const gone = await until('the window to close', () => macWindows()?.length === 0, 20_000);
+  const gone = await until('the window to close', () => macWindows()?.length === 0, 40_000);
   if (macWindows() === null) note('the window list could not be read: that the window closed is NOT seen here');
-  else ok(gone, 'the window closed when the engine said the meeting was over');
+  else {
+    if (!gone) note('the window did not close; every window of the app and the screens now:\n' + macSeen() + '\nwhat the stand-in engine logged last:\n' + readLog(stub.log).slice(-6).map((e) => JSON.stringify(e)).join('\n'));
+    ok(gone, 'the window closed when the engine said the meeting was over');
+  }
   ok(macRunning().length === 1, 'the menu-bar program is still running');
   ok(readLog(stub.log).some((e) => e.what === 'started' && e.args[0] === 'listen'), 'and its listener is still the one it started');
 
@@ -748,6 +760,18 @@ async function macWindow() {
 const winProfiles = () => names(tmpdir()).filter((n) => n.startsWith('files-direct-window-'));
 
 const winWindows = () => run('powershell.exe', ['-NoProfile', '-Command', "Get-Process | Where-Object { $_.MainWindowTitle -eq 'Files Direct' } | ForEach-Object { $_.Id }"]).stdout.split(/\r?\n/).filter(Boolean);
+
+/** When the app's folder does not go after an uninstall: how long it took (up to five minutes), what is left in it, and every program that runs from it or is called like one of the app's. */
+async function winFolderGoes(label) {
+  const t0 = Date.now();
+  const gone = await until('the app folder to go (' + label + ')', () => !existsSync(APPDIR()), 300_000);
+  note('the app folder ' + (gone ? 'went after ' + Math.round((Date.now() - t0) / 1000) + ' s' : 'is still there after 300 s') + ' (' + label + ')');
+  if (!gone) {
+    note('what is left in the app folder:\n' + run('powershell.exe', ['-NoProfile', '-Command', "Get-ChildItem -Recurse -Force '" + APPDIR() + "' | Select-Object -First 30 | ForEach-Object { $_.FullName.Substring(" + APPDIR().length + ") + ' ' + $_.Length }"]).stdout.trim());
+    note('programs that run from it or are called like the app\'s:\n' + run('powershell.exe', ['-NoProfile', '-Command', "Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -like '" + APPDIR() + "*' -or $_.Name -match 'unins|msedgewebview2|Files Direct|node' } | ForEach-Object { $_.ProcessId.ToString() + ' ' + $_.Name + ' ' + $_.CommandLine }"]).stdout.trim());
+  }
+  return gone;
+}
 
 async function winWindow() {
   mkdirSync(WORK, { recursive: true });
@@ -816,7 +840,7 @@ async function winWindow() {
   await until('the tray program to end', () => trayRunning().length === 0, 20_000);
   const un = run(join(APPDIR(), 'unins000.exe'), ['/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART'], { stdio: 'ignore', timeout: 300_000 });
   ok(un.status === 0, 'the uninstaller ran silently');
-  ok(await until('the app folder to go', () => !existsSync(APPDIR()), 90_000), 'the app folder is gone');
+  ok(await winFolderGoes('after uninstalling'), 'the app folder is gone');
   outside.stop();
   sameListing(before, listing(), 'after uninstalling');
 }
