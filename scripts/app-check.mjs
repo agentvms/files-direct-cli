@@ -7,7 +7,7 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { entry, fileNames, keygen, makeFeed, signFeed } from './app-feed.mjs';
@@ -28,20 +28,32 @@ const ok = (cond, text) => {
 };
 const note = (text) => console.log('seen    ' + text.replace(/\n/g, '\n        '));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const run = (cmd, args, o = {}) => spawnSync(cmd, args, { encoding: 'utf8', ...o });
+/** Nothing here waits for ever: a program that does not end in five minutes is stopped and named, so a hung runner shows what it hung on (a step that hung for twenty minutes on windows-2025 left no log at all). */
+const run = (cmd, args, o = {}) => {
+  const r = spawnSync(cmd, args, { encoding: 'utf8', timeout: 300_000, ...o });
+  if (r.error?.code === 'ETIMEDOUT') console.log('stopped after ' + (o.timeout ?? 300_000) / 1000 + ' s: ' + cmd + ' ' + args.join(' ').slice(0, 160));
+  return r;
+};
 /** Like run, without stopping this script: a stand-in site that runs inside it must be able to answer while the program waits for it. */
 const runAsync = (cmd, args, o = {}) =>
   new Promise((done) => {
     const c = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'], ...o });
+    const hung = setTimeout(() => {
+      console.log('stopped after 300 s: ' + cmd + ' ' + args.join(' ').slice(0, 160));
+      c.kill();
+    }, 300_000);
     let stdout = '';
     let stderr = '';
     c.stdout.on('data', (d) => (stdout += d));
     c.stderr.on('data', (d) => (stderr += d));
     c.on('error', (e) => done({ status: 127, stdout, stderr: String(e) }));
-    c.on('close', (status) => done({ status, stdout, stderr }));
+    c.on('close', (status) => {
+      clearTimeout(hung);
+      done({ status, stdout, stderr });
+    });
   });
 async function until(what, fn, ms = 30_000) {
-  for (let t = 0; t < ms; t += 250) {
+  for (const end = Date.now() + ms; Date.now() < end; ) {
     const v = await fn();
     if (v) return v;
     await sleep(250);
@@ -239,7 +251,7 @@ export function feedServer({ version, name, bytes, key, sign = key, mutate = (t)
 
 /** Builds the app as another version, with the test key in it, into a folder of its own. Only the file the app fetches by itself is made. */
 function buildTestApp(out, key, extraEnv = {}) {
-  const r = run(process.execPath, [join(import.meta.dirname, 'app-build.mjs'), TARGET, 'build'], { env: { ...process.env, FD_APP_OUT: out, FD_UPDATE_PUBLIC_KEY: key.public, FD_APP_ONLY: 'update', ...extraEnv }, stdio: ['ignore', 'inherit', 'inherit'] });
+  const r = run(process.execPath, [join(import.meta.dirname, 'app-build.mjs'), TARGET, 'build'], { env: { ...process.env, FD_APP_OUT: out, FD_UPDATE_PUBLIC_KEY: key.public, FD_APP_ONLY: 'update', ...extraEnv }, stdio: ['ignore', 'inherit', 'inherit'], timeout: 900_000 });
   ok(r.status === 0, 'built the app for the update check into ' + out + ' ' + JSON.stringify(extraEnv));
 }
 
@@ -509,7 +521,7 @@ async function winApp() {
   // Remove: the uninstaller the menu item starts, with the tray program still running (the program closes it itself when the person chooses Remove in its menu; from Settings the uninstaller has to)
   const un = run(join(APPDIR(), 'unins000.exe'), ['/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART'], { stdio: 'ignore', timeout: 300_000 });
   ok(un.status === 0, 'the uninstaller ran silently');
-  ok(await until('the app folder to go', () => !existsSync(APPDIR()), 90_000), 'the app folder is gone');
+  ok(await winFolderGoes('after uninstalling'), 'the app folder is gone');
   sameListing(before, listing(), 'after uninstalling');
 }
 
@@ -598,9 +610,10 @@ async function winUpdate() {
   ok(await until('the tray program', () => trayRunning().length > 0, 60_000), 'the tray program is running again, as the new version');
   ok(run(node, [engine, 'version']).stdout.trim() === '99.0.0', 'the new engine says it is 99.0.0');
   site.stop();
-  for (const e of trayRunning()) run('taskkill', ['/PID', e.split(' ').pop(), '/F']);
+  for (const e of trayRunning()) run('taskkill', ['/PID', e.split(' ').pop(), '/T', '/F']);
+  await winProgramsEnd(); // a tray program that was killed leaves its engine to end by itself: an uninstall that meets it cannot delete its node.exe (windows-2022 of the second head run)
   run(join(APPDIR(), 'unins000.exe'), ['/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART'], { stdio: 'ignore', timeout: 300_000 });
-  await until('the app folder to go', () => !existsSync(APPDIR()), 90_000);
+  await winFolderGoes('after the update test');
   sameListing(before, listing(), 'after the update test and uninstalling');
 }
 
@@ -648,8 +661,16 @@ function putStubIn(dir, outside) {
   return { log, end, real };
 }
 
-/** The windows of the app that are 480 wide and tall (the size of the Files Direct window), seen from outside the app. null when this machine would not say. */
-const MAC_WINDOWS = "ObjC.import('CoreGraphics'); const all = ObjC.deepUnwrap(ObjC.castRefToObject($.CGWindowListCopyWindowInfo($.kCGWindowListOptionAll, $.kCGNullWindowID))); JSON.stringify(all.filter(function (w) { return /Files ?Direct/.test(w.kCGWindowOwnerName || '') && w.kCGWindowBounds && w.kCGWindowBounds.Width === 480 && w.kCGWindowBounds.Height >= 760; }).map(function (w) { return { w: w.kCGWindowBounds.Width, h: w.kCGWindowBounds.Height, onscreen: Boolean(w.kCGWindowIsOnscreen) }; }))";
+/** The windows of the app that are 480 wide and at least 500 tall, seen from outside the app. null when this machine would not say. The window asks for 480 by 760 inside (788 with its title bar), and a Mac makes any
+ *  window fit its screen: on GitHub's macos-latest (arm64) the screen is 1024 by 768 with 677 free under the menu bar, so the window is 480 by 674 there (seen in the run of files-direct-60's fix-forward), and a real
+ *  Mac with a small screen does the same. Other things of the app that are 480 wide are not this tall (a hidden 500 by 500 one, bars 1024 by 30). */
+const MAC_WINDOWS = "ObjC.import('CoreGraphics'); const all = ObjC.deepUnwrap(ObjC.castRefToObject($.CGWindowListCopyWindowInfo($.kCGWindowListOptionAll, $.kCGNullWindowID))); JSON.stringify(all.filter(function (w) { return /Files ?Direct/.test(w.kCGWindowOwnerName || '') && w.kCGWindowIsOnscreen && w.kCGWindowBounds && w.kCGWindowBounds.Width === 480 && w.kCGWindowBounds.Height >= 500; }).map(function (w) { return { w: w.kCGWindowBounds.Width, h: w.kCGWindowBounds.Height, onscreen: Boolean(w.kCGWindowIsOnscreen) }; }))";
+/** Every window of the app and the screens' sizes, as the machine says them (what to read when the list above is empty or odd: the screen of a runner can be small, and a window is made to fit its screen). */
+const MAC_ALL = "ObjC.import('CoreGraphics'); ObjC.import('AppKit'); const all = ObjC.deepUnwrap(ObjC.castRefToObject($.CGWindowListCopyWindowInfo($.kCGWindowListOptionAll, $.kCGNullWindowID))); const list = $.NSScreen.screens; const screens = []; for (let i = 0; i < Number(list.count); i++) { const s = list.objectAtIndex(i); screens.push({ frame: [s.frame.size.width, s.frame.size.height], visible: [s.visibleFrame.size.width, s.visibleFrame.size.height] }); } JSON.stringify({ screens: screens, windows: all.filter(function (w) { return /Files ?Direct/.test(w.kCGWindowOwnerName || ''); }).map(function (w) { return { owner: w.kCGWindowOwnerName, name: w.kCGWindowName, layer: w.kCGWindowLayer, w: w.kCGWindowBounds && w.kCGWindowBounds.Width, h: w.kCGWindowBounds && w.kCGWindowBounds.Height, onscreen: Boolean(w.kCGWindowIsOnscreen) }; }) })";
+const macSeen = () => {
+  const r = run('osascript', ['-l', 'JavaScript', '-e', MAC_ALL]);
+  return r.status === 0 ? r.stdout.trim() : 'not readable: ' + (r.stderr || '').trim().slice(0, 200);
+};
 const macWindows = () => {
   try {
     return JSON.parse(run('osascript', ['-l', 'JavaScript', '-e', MAC_WINDOWS]).stdout.trim());
@@ -696,6 +717,7 @@ async function macWindow() {
   const wins = await until('the window', () => (macWindows()?.length ? macWindows() : null), 20_000);
   if (wins === null && macWindows() === null) note('the window list could not be read on this machine: the window itself is NOT seen here');
   else ok(wins?.length === 1, 'one window of the app, 480 wide, is on the screen list: ' + JSON.stringify(wins));
+  note('every window of the app and the screens, as this machine says them:\n' + macSeen());
   run('screencapture', ['-x', join(SHOTS, 'mac-app-window.png')]); // best effort: a runner may have no screen
 
   // the page sends the window to the outside address: the system's browser gets it and the window stays on the page
@@ -714,9 +736,12 @@ async function macWindow() {
 
   // the meeting is over (what the engine says when the page's Close is pressed): the window goes, the menu-bar program stays
   writeFileSync(stub.end, '');
-  const gone = await until('the window to close', () => macWindows()?.length === 0, 20_000);
+  const gone = await until('the window to close', () => macWindows()?.length === 0, 40_000);
   if (macWindows() === null) note('the window list could not be read: that the window closed is NOT seen here');
-  else ok(gone, 'the window closed when the engine said the meeting was over');
+  else {
+    if (!gone) note('the window did not close; every window of the app and the screens now:\n' + macSeen() + '\nwhat the stand-in engine logged last:\n' + readLog(stub.log).slice(-6).map((e) => JSON.stringify(e)).join('\n'));
+    ok(gone, 'the window closed when the engine said the meeting was over');
+  }
   ok(macRunning().length === 1, 'the menu-bar program is still running');
   ok(readLog(stub.log).some((e) => e.what === 'started' && e.args[0] === 'listen'), 'and its listener is still the one it started');
 
@@ -728,7 +753,9 @@ async function macWindow() {
   if (press.status !== 0) note('closing by the red button was NOT tried: a script on this machine is not allowed to press it (' + (press.stderr || '').trim().slice(0, 160) + ')');
   else {
     ok(await until('the page\'s own Close', () => readLog(stub.log).find((e) => e.what === 'act' && /"do":"close"/.test(e.body)), 20_000), 'closing the window pressed the page\'s own Close (the engine was told)');
-    ok(await until('the window to close', () => macWindows()?.length === 0, 20_000), 'and the window closed');
+    const shut = await until('the window to close', () => macWindows()?.length === 0, 20_000);
+    if (!shut) note('the window did not close; every window of the app and the screens now:\n' + macSeen() + '\nwhat the stand-in engine logged last:\n' + readLog(stub.log).slice(-8).map((e) => JSON.stringify(e)).join('\n'));
+    ok(shut, 'and the window closed');
     ok(macRunning().length === 1, 'and the menu-bar program is still running');
   }
 
@@ -748,6 +775,27 @@ async function macWindow() {
 const winProfiles = () => names(tmpdir()).filter((n) => n.startsWith('files-direct-window-'));
 
 const winWindows = () => run('powershell.exe', ['-NoProfile', '-Command', "Get-Process | Where-Object { $_.MainWindowTitle -eq 'Files Direct' } | ForEach-Object { $_.Id }"]).stdout.split(/\r?\n/).filter(Boolean);
+
+/** The programs running from the app's folder (the tray program, an engine, the program of a right-click): a file of one of them cannot be deleted while it runs. */
+const winAppPrograms = () => run('powershell.exe', ['-NoProfile', '-Command', "Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -like '" + APPDIR() + "\\*' } | ForEach-Object { $_.ProcessId.ToString() + ' ' + $_.Name }"]).stdout.split(/\r?\n/).filter(Boolean);
+
+/** Waits for every program that runs from the app's folder to end (a stopped tray program's engine goes a moment after it), so an uninstall does not meet a file in use. */
+async function winProgramsEnd() {
+  const gone = await until('the programs of the app to end', () => (winAppPrograms().length === 0 ? true : null), 40_000);
+  if (!gone) note('programs still running from the app folder before the uninstall: ' + winAppPrograms().join(', '));
+}
+
+/** When the app's folder does not go after an uninstall: how long it took (up to five minutes), what is left in it, and every program that runs from it or is called like one of the app's. */
+async function winFolderGoes(label) {
+  const t0 = Date.now();
+  const gone = await until('the app folder to go (' + label + ')', () => !existsSync(APPDIR()), 300_000);
+  note('the app folder ' + (gone ? 'went after ' + Math.round((Date.now() - t0) / 1000) + ' s' : 'is still there after 300 s') + ' (' + label + ')');
+  if (!gone) {
+    note('what is left in the app folder:\n' + run('powershell.exe', ['-NoProfile', '-Command', "Get-ChildItem -Recurse -Force '" + APPDIR() + "' | Select-Object -First 30 | ForEach-Object { $_.FullName.Substring(" + APPDIR().length + ") + ' ' + $_.Length }"]).stdout.trim());
+    note('programs that run from it or are called like the app\'s:\n' + run('powershell.exe', ['-NoProfile', '-Command', "Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -like '" + APPDIR() + "*' -or $_.Name -match 'unins|msedgewebview2|Files Direct|node' } | ForEach-Object { $_.ProcessId.ToString() + ' ' + $_.Name + ' ' + $_.CommandLine }"]).stdout.trim());
+  }
+  return gone;
+}
 
 async function winWindow() {
   mkdirSync(WORK, { recursive: true });
@@ -811,12 +859,14 @@ async function winWindow() {
   ok(old && JSON.stringify(old.args) === JSON.stringify(['open', '--app', '--gather', '--paths-stdin']), 'without WebView2 the entry asks the engine for the browser window, as before');
   ok(winWindows().length === 0, 'and the app shows no window of its own');
 
-  // Remove
+  // Remove. The stand-in engine of the last Send (no window, so it ends by itself after 8 s) runs from the app's folder: an uninstall while it runs cannot delete its node.exe and leaves it behind (what the first
+  // run of this check on its own machines showed, files-direct-60 fix-forward), so it is waited for, as a person would not uninstall in the middle of a send
   run(exe, ['quit'], { stdio: 'ignore' });
   await until('the tray program to end', () => trayRunning().length === 0, 20_000);
+  await winProgramsEnd();
   const un = run(join(APPDIR(), 'unins000.exe'), ['/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART'], { stdio: 'ignore', timeout: 300_000 });
   ok(un.status === 0, 'the uninstaller ran silently');
-  ok(await until('the app folder to go', () => !existsSync(APPDIR()), 90_000), 'the app folder is gone');
+  ok(await winFolderGoes('after uninstalling'), 'the app folder is gone');
   outside.stop();
   sameListing(before, listing(), 'after uninstalling');
 }
@@ -829,6 +879,17 @@ if (typeof process !== 'undefined' && process.argv?.[1] && import.meta.url === n
     process.exit(2);
   }
   mkdirSync(SHOTS, { recursive: true });
+  // everything this step prints is also written to a file in the folder the workflow uploads, so a job that hangs or is lost on the runner still leaves its record (a hung windows-2025 job leaves no log of its own)
+  const record = join(SHOTS, process.argv[2] + '.log');
+  const say = console.log.bind(console);
+  console.log = (...a) => {
+    say(...a);
+    try {
+      appendFileSync(record, a.join(' ') + '\n');
+    } catch {
+      // the record is a help, not a check: a file that cannot be written must not fail the step
+    }
+  };
   try {
     await step();
   } catch (e) {

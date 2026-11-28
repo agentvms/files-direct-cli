@@ -46,6 +46,7 @@ jobs:
 
   mac:
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30 # a job takes 3 to 12 minutes; one that hangs ends as a failure with its log, not as a job that is lost
     strategy:
       fail-fast: false
       matrix:
@@ -67,14 +68,18 @@ jobs:
         run: node scripts/app-build.mjs ${{ matrix.target }} build
       - name: Open the disk image read-only and check its window (the app, the Applications link, the background picture, the layout)
         run: node scripts/app-check.mjs mac-dmg
+        timeout-minutes: 12
       - name: Download, open, run, send two files and a folder, a hostile name through the Quick Action, Remove
         run: node scripts/app-check.mjs mac-app
+        timeout-minutes: 12
       - name: The app's own window (a stand-in engine serves a page; the window loads it, a link out goes to the browser, a second Send starts nothing, closing leaves the menu-bar program)
         if: ${{ !cancelled() }}
         run: node scripts/app-check.mjs mac-window
+        timeout-minutes: 12
       - name: Update from a stand-in feed (a newer build is installed; a changed, wrongly signed, older or longer one is refused), then Remove
         if: ${{ !cancelled() }}
         run: node scripts/app-check.mjs mac-update
+        timeout-minutes: 12
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
@@ -86,6 +91,7 @@ jobs:
 
   windows:
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -103,15 +109,19 @@ jobs:
         run: node scripts/app-build.mjs win-x64 build
       - name: A hostile name through the launcher (the careless launcher breaks, the real one does not)
         run: node scripts/app-check.mjs win-hostile
+        timeout-minutes: 12
       - name: Install with no administrator, the tray program, the entries, send two files and a folder, uninstall leaves nothing
         if: ${{ !cancelled() }}
         run: node scripts/app-check.mjs win-app
+        timeout-minutes: 12
       - name: The app's own window (a stand-in engine serves a page; the window loads it, a link out goes to the browser, a second Send focuses it, closing leaves the tray program; no WebView2 means the browser)
         if: ${{ !cancelled() }}
         run: node scripts/app-check.mjs win-window
+        timeout-minutes: 12
       - name: Update from a stand-in feed (a newer build is installed; a changed, wrongly signed or older one is refused), then uninstall
         if: ${{ !cancelled() }}
         run: node scripts/app-check.mjs win-update
+        timeout-minutes: 12
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
