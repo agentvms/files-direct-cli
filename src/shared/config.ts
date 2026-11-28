@@ -81,6 +81,12 @@ export const BLOCK_SIZE = 4 * 1024 * 1024;
 export const PIECE_SIZE = 64 * 1024;
 
 /**
+ * Clipboard items (files-direct-57, docs/PROTOCOL.md "Clipboard items"). A pasted text goes as one text frame (`{"t":"clip","v":1,"kind":"text","text":…}`) to a page that said it can show one.
+ * The text is at most this many UTF-8 bytes, and the whole frame (escapes and all) at most PIECE_SIZE; a text that does not fit goes as the file pasted-text.txt instead, so nothing is lost.
+ */
+export const CLIP_TEXT_MAX_BYTES = 48 * 1024;
+
+/**
  * Small previews of photos (files-direct-32, docs/PROTOCOL.md "Previews"). The receiver says it takes them; the sender makes them on its own device and sends them over the same
  * connection, one frame each, before the answer. How many, how big across and how many bytes each is depends on the route: through our servers they stay tiny, because they count against the meter.
  */

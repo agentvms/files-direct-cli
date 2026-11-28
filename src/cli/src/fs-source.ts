@@ -47,12 +47,25 @@ export async function collect(paths: string[], opts: { roots?: Roots } = {}): Pr
   return { files, skipped };
 }
 
+/** A file on disk, as the engine sends it: where it is kept is known, so a small picture of a photo can be made from it (cli/src/preview-node.ts). */
+export interface DiskSource extends Sendable {
+  abs: string;
+}
+
+/**
+ * The kinds of photo the program names in its offer, by the file's ending (a browser does the same for a file it is given). The other device draws a preview only for a file the offer calls a photo;
+ * everything else is called a plain file as before. The ending is a word, not a promise: the picture-maker looks at the file's own first bytes.
+ */
+const PHOTO_TYPES = new Map([['jpg', 'image/jpeg'], ['jpeg', 'image/jpeg'], ['png', 'image/png'], ['gif', 'image/gif'], ['webp', 'image/webp'], ['avif', 'image/avif'], ['heic', 'image/heic'], ['heif', 'image/heif']]);
+export const typeOfName = (name: string): string => PHOTO_TYPES.get(/\.([A-Za-z0-9]+)$/.exec(name)?.[1]?.toLowerCase() ?? '') ?? 'application/octet-stream';
+
 /** The engine's view of a file on disk: it asks for one block at a time, and each is read from the file when asked. */
-export function sendableOf(f: Picked): Sendable {
+export function sendableOf(f: Picked): DiskSource {
   return {
     name: f.name,
+    abs: f.abs,
     size: f.size,
-    type: 'application/octet-stream',
+    type: typeOfName(f.name),
     slice: (a, b) => ({
       arrayBuffer: async () => {
         const h = await open(f.abs, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));

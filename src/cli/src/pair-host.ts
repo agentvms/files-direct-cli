@@ -124,8 +124,8 @@ export function programView(o: { offer: boolean; accept: boolean; name?: string;
         queueMicrotask(offer);
       }
     },
-    form(start, ok) {
-      ok(start, o.name); // the nickname is left as it starts; --name is this computer's own name, as before
+    form(_start, ok) {
+      ok('', o.name); // no nickname: nobody sees the field, so the device is kept by the name it gives itself (files-direct-58: a word that was never shown is not an accepted name); --name is this computer's own name, as before
     },
     waiting() {
       o.say({ state: 'offered' });

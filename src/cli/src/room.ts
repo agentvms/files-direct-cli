@@ -16,6 +16,7 @@ import type { PairWire } from '../../web/src/transfer/frames.ts';
 import { PathChannel } from './channel.ts';
 import { type Saver, createSaver } from './fs-sink.ts';
 import { type Picked, type Skipped, sendableOf } from './fs-source.ts';
+import { makePreview } from './preview-node.ts';
 import { type Guard, Refused, conflicts } from './safe-path.ts';
 import { type Outcome, type Reason, reasonText } from './words.ts';
 
@@ -406,6 +407,7 @@ export class Run {
         } else this.pc.extra(ch);
         this.route = 'direct';
         this.st.relayed = false;
+        this.session?.setRelay(false); // the limits of the previews that come after are the direct ones
         this.keepRecord();
       },
     });
@@ -538,6 +540,9 @@ export class Run {
       sinks: this.saver?.sinks ?? { kind: 'disk', create: () => Promise.reject(new Error('this run does not receive')), close: async () => {} },
       odd: this.role === 'sender',
       ask: this.role === 'receiver' || this.asking !== null,
+      // a receiver that says it draws previews is sent them (docs/PROTOCOL.md, "Previews"); the limits follow the route this connection is on
+      ...(this.sent.length > 0 ? { makePreview } : {}),
+      relay: route === 'relay',
       after: later,
       emit: (e) => this.onEngine(e),
     });

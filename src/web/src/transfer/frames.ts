@@ -61,11 +61,18 @@ export type Control =
    * Saved devices (files-direct-39, docs/PROTOCOL.md "Saved devices"): the two pages agree to remember each other. Not part of a batch, so no `b`. The engine only carries it
    * (a frame over PAIR_WIRE_MAX bytes is dropped); the page reads it. A page from before it never says it is able (the room passes on a yes-or-no word), so none is sent to one.
    */
-  | PairWire;
+  | PairWire
+  | ClipWire;
 
 /** What the two pages say to each other to remember each other. Names and the pair secret travel here, over the connection, and nowhere else. */
 export type PairWire = { t: 'pair'; p: 'offer' | 'accept' | 'decline' | 'secret' | 'done' | 'cancel' | 'name'; name?: string; secret?: string; why?: string };
 export const PAIR_WIRE_MAX = 1024;
+
+/**
+ * A clipboard item (files-direct-57, docs/PROTOCOL.md "Clipboard items"): not part of a batch, so no `b`. The engine only carries it (a frame over PIECE_SIZE bytes is dropped); the page checks every
+ * field (`web/src/clip.ts`). `v` is the version of the frame, `kind` what it holds; today only version 1 and 'text'. Sent only to a page that said `clip: 1` in its device message.
+ */
+export type ClipWire = { t: 'clip'; v: number; kind: string; text: string };
 
 export async function sha256(data: Uint8Array): Promise<Uint8Array> {
   return new Uint8Array(await crypto.subtle.digest('SHA-256', data as BufferSource));

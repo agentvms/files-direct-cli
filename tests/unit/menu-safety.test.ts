@@ -119,6 +119,44 @@ describe('the Mac Quick Action script', () => {
     });
   }
 
+  // files-direct-60: the app's entry hands the files to the Files Direct app (open -a); a stand-in for /usr/bin/open writes what it was given
+  for (const shell of ['/bin/sh', '/bin/bash']) {
+    it(`the app's entry hands every hostile name to the app as one absolute argument, under ${shell}, and runs nothing else`, async () => {
+      const work = mkdtempSync(join(root, 'app-'));
+      const bundle = join(work, "Ann's & Bob's \"Apps\" $(touch pwned-app)", 'Files Direct.app');
+      mkdirSync(join(bundle, 'Contents', 'Resources'), { recursive: true });
+      const out = join(work, 'open-argv.json');
+      const writer = join(work, 'writer.mjs');
+      writeFileSync(writer, `import { writeFileSync } from 'node:fs'; writeFileSync(${JSON.stringify(out)}, JSON.stringify(process.argv.slice(2)));\n`);
+      const fakeOpen = join(work, 'fake-open');
+      writeFileSync(fakeOpen, `#!/bin/sh\nexec '${process.execPath}' '${writer}' "$@"\n`, { mode: 0o755 });
+      const script = join(work, 'action.sh');
+      const text = quickActionScript({ node: join(bundle, 'Contents', 'Resources', 'node'), script: join(bundle, 'Contents', 'Resources', 'files-direct.mjs'), app: true });
+      expect(text).toContain('open=/usr/bin/open');
+      writeFileSync(script, text.replace('open=/usr/bin/open', () => `open='${fakeOpen}'`));
+      const run = spawnSync(shell, [script, ...HOSTILE], { cwd: work, encoding: 'utf8' });
+      expect(run.status, run.stderr).toBe(0);
+      const argv = JSON.parse(await waitFor(out)) as string[];
+      expect(argv.slice(0, 2), 'the app is named first, as one argument').toEqual(['-a', bundle]);
+      const files = argv.slice(2);
+      expect(files.length).toBe(HOSTILE.length);
+      // every name is one argument, as it was, and made absolute (so none can be taken for an option of open)
+      files.forEach((f, i) => expect(f, HOSTILE[i]).toBe(HOSTILE[i]!.startsWith('/') ? HOSTILE[i] : join(work, HOSTILE[i]!)));
+      expect(files.every((f) => f.startsWith('/'))).toBe(true);
+      expect(readdirSync(work).filter((n) => n.startsWith('pwned'))).toEqual([]);
+      expect(existsSync(join(root, 'pwned'))).toBe(false);
+    });
+  }
+
+  it("the app's entry does nothing harmful and says so when the app is gone", () => {
+    const work = mkdtempSync(join(root, 'app-gone-'));
+    const script = join(work, 'action.sh');
+    writeFileSync(script, quickActionScript({ node: '/x/Files Direct.app/Contents/Resources/node', script: join(work, 'Gone.app', 'Contents', 'Resources', 'files-direct.mjs'), app: true }).replace('open=/usr/bin/open', 'open=/nonexistent/open'));
+    const run = spawnSync('/bin/sh', [script, 'a.txt'], { cwd: work, encoding: 'utf8', env: { ...process.env, PATH: '/usr/bin:/bin' } });
+    expect(run.status).toBe(0);
+    expect(readdirSync(work)).toEqual(['action.sh']);
+  });
+
   it('does nothing harmful and says so in plain words when the program is gone', () => {
     const work = mkdtempSync(join(root, 'gone-'));
     const script = join(work, 'action.sh');

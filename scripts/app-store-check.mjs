@@ -55,13 +55,16 @@ function hostileFiles(dir) {
 async function seenBy(what, log, ms = 40_000) {
   return JSON.parse((await until('the stand-in engine (' + what + ')', () => existsSync(log) && readFileSync(log, 'utf8'), ms)) ?? 'null');
 }
-const exactly = (seen, files) => !!seen && JSON.stringify(seen.argv) === JSON.stringify(['open', '--app', '--paths-stdin']) && JSON.stringify(seen.stdin) === JSON.stringify(files);
+// without the app's window (no WebView2 beside the launcher, or none on the machine) the engine is asked for the browser's window; with it, for the app's own (--shell-window)
+const BROWSER_ARGV = ['open', '--app', '--paths-stdin'];
+const WINDOW_ARGV = ['open', '--app', '--shell-window', '--paths-stdin'];
+const exactly = (seen, files, argv) => !!seen && JSON.stringify(seen.argv) === JSON.stringify(argv) && JSON.stringify(seen.stdin) === JSON.stringify(files);
 
-async function expectHandedOn(what, log, files, home) {
+async function expectHandedOn(what, log, files, home, argv) {
   const seen = await seenBy(what, log);
-  const same = exactly(seen, files);
+  const same = exactly(seen, files, argv);
   if (!same) note(what + ': the engine saw ' + JSON.stringify(seen)?.slice(0, 1500));
-  ok(same, what + ': the engine was started with exactly "open --app --paths-stdin" and all ' + files.length + ' names, in order, on its standard input, none on a command line');
+  ok(same, what + ': the engine was started with exactly "' + argv.join(' ') + '" and all ' + files.length + ' names, in order, on its standard input, none on a command line');
   ok(!existsSync(join(home, 'pwned.txt')) && !files.some((f) => existsSync(join(f, '..', 'pwned'))) && !existsSync(join(process.cwd(), 'pwned.txt')), what + ': nothing else ran (no file called pwned)');
 }
 
@@ -188,7 +191,8 @@ export async function check() {
     const r1 = run(tester, [join(direct, HANDLER_FILE), list], { cwd: WORK, timeout: 60_000 });
     note('InvokeTest (library file): exit ' + r1.status + '\n' + String(r1.stdout + r1.stderr).trim());
     ok(r1.status === 0 && /title: Send with Files Direct/.test(r1.stdout), 'the handler answers with its title "Send with Files Direct" and runs Invoke');
-    await expectHandedOn('handler as a plain file', dlog, files, WORK);
+    // the folder holds the launcher without the WebView2 files, so the launcher does not find the app's window and takes the browser path, whatever this machine has
+    await expectHandedOn('handler as a plain file (no WebView2 files beside the launcher)', dlog, files, WORK, BROWSER_ARGV);
     // 3a'. the careless form of the handler (the paths pasted into a command line) must be broken by the same names: the check can fail
     const naive = join(WORK, 'naive App');
     rmSync(naive, { recursive: true, force: true });
@@ -199,7 +203,7 @@ export async function check() {
     compileHandler(naive, join(WORK, 'naive-build'), { naive: true });
     const r0 = run(tester, [join(naive, HANDLER_FILE), list], { cwd: WORK, timeout: 60_000 });
     const careless = await seenBy('careless handler', nlog, 15_000);
-    ok(r0.status === 0 && !exactly(careless, files), 'the careless handler (the paths pasted into the command line) is broken by these names, as it should be: the check can fail (' + (careless ? 'the engine saw ' + careless.stdin.length + ' names instead of ' + files.length : 'the engine never started') + ')');
+    ok(r0.status === 0 && !exactly(careless, files, BROWSER_ARGV), 'the careless handler (the paths pasted into the command line) is broken by these names, as it should be: the check can fail (' + (careless ? 'the engine saw ' + careless.stdin.length + ' names instead of ' + files.length : 'the engine never started') + ')');
     // 3b. as the installed package registered it: a package whose engine is the stand-in
     const rlog = join(WORK, 'seen-registered.json');
     const regBuild = await buildPackage({ stub: rlog, tag: 'registered' });
@@ -209,7 +213,10 @@ export async function check() {
       const r2 = run(tester, ['--registered', list], { cwd: WORK, timeout: 90_000 });
       note('InvokeTest (as registered): exit ' + r2.status + '\n' + String(r2.stdout + r2.stderr).trim());
       ok(r2.status === 0, 'Windows hands out the installed package\'s handler, and its Invoke works');
-      if (r2.status === 0) await expectHandedOn('handler as the installed package registered it', rlog, files, WORK);
+      // the package holds the WebView2 files: with the runtime on this machine the engine is asked for the app's own window, without it for the browser's
+      const runtime = ps("(Get-ItemProperty 'HKLM:\\SOFTWARE\\WOW6432Node\\Microsoft\\EdgeUpdate\\Clients\\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}' -ErrorAction SilentlyContinue).pv").out.trim().length > 0;
+      note('the WebView2 runtime on this machine: ' + (runtime ? 'yes' : 'no'));
+      if (r2.status === 0) await expectHandedOn('handler as the installed package registered it (' + (runtime ? 'with' : 'without') + ' the WebView2 runtime)', rlog, files, WORK, runtime ? WINDOW_ARGV : BROWSER_ARGV);
       ps('Get-Process -Name FilesDirect, node -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "*WindowsApps*" } | Stop-Process -Force');
       ok(uninstall(settings.name).status === 0 && !installed(settings.name), 'Remove-AppxPackage removes the check package again');
     }

@@ -5,7 +5,7 @@
  */
 import { BLOCK_SIZE, HIGH_WATER, LOW_WATER, MAX_BLOCK_SIZE, MAX_BLOCK_TRIES, PIECE_SIZE, POSTER_ONE_MS, PREVIEW_ONE_MS, PREVIEW_TOTAL_MS, SCRUB_BYTE_BUDGET, SCRUB_LIMITS, WINDOW_BLOCKS, previewLimits, type PreviewLimits } from '../../../shared/config.ts';
 import { cleanNote } from '../../../shared/ask.ts';
-import { type Control, type FileInfo, type PairWire, DIGEST_BYTES, PAIR_WIRE_MAX, decodePiece, encodePiece, fingerprint, fromHex, sameBytes, sha256, toHex } from './frames.ts';
+import { type ClipWire, type Control, type FileInfo, type PairWire, DIGEST_BYTES, PAIR_WIRE_MAX, decodePiece, encodePiece, fingerprint, fromHex, sameBytes, sha256, toHex } from './frames.ts';
 import { Meter } from './meter.ts';
 import { cleanPaths } from './paths.ts';
 import { type PreviewImage, fromBase64, isPosterKind, isPosterSource, isPreviewKind, isPreviewSource, isPreviewType, looksLike, toBase64 } from './preview.ts';
@@ -57,6 +57,8 @@ export type TransferEvent =
   | { k: 'declined'; b: number; by: Side }
   /** The other page says something about remembering this device (saved devices). The page reads and checks it; nothing here keeps it. */
   | { k: 'pair'; m: PairWire }
+  /** The other page sent a clipboard item (files-direct-57). Unchecked: the page reads every field, and drops what it does not know. */
+  | { k: 'clip'; m: ClipWire }
   /** The other side sent something that makes no sense, or the channel was lost while sending. */
   | { k: 'error'; why: 'unreadable' | 'lost' | 'refresh'; b?: number; /** Where in the loop it was noticed: for tests and bug reports, never shown. */ site?: string };
 
@@ -319,6 +321,12 @@ export class Session {
     this.control(m);
   }
 
+  /** Sends a clipboard item to the other page (files-direct-57). A frame over one piece is not sent: the page chooses the file instead before it gets here. */
+  clip(m: ClipWire): void {
+    if (new TextEncoder().encode(JSON.stringify(m)).length > PIECE_SIZE) return;
+    this.control(m);
+  }
+
   /** The connection now goes through our servers (or no longer does): the limits of previews that come after follow. */
   setRelay(on: boolean): void {
     this.relay = on;
@@ -518,6 +526,8 @@ export class Session {
       // a preview frame is at most a piece as a whole, whatever else it carries (padding, extra properties): a bigger one is dropped like any out-of-bounds preview
       if (msg.t === 'preview' && new TextEncoder().encode(data).length > PIECE_SIZE) return;
       if (msg.t === 'pair') return data.length <= PAIR_WIRE_MAX && typeof msg.p === 'string' ? this.emit({ k: 'pair', m: msg }) : undefined; // the page checks every field; a frame that is too big is dropped like an out-of-bounds preview
+      // a clipboard item is one frame of at most a piece, whatever else it carries; the page checks the rest
+      if (msg.t === 'clip') return new TextEncoder().encode(data).length <= PIECE_SIZE ? this.emit({ k: 'clip', m: msg }) : undefined;
       return this.processControl(msg);
     }
     const piece = decodePiece(data);

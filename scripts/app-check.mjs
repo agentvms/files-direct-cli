@@ -1,6 +1,6 @@
 // The checks of the double-click app (files-direct-34), run by .github/workflows/desktop-app.yml on GitHub's own macOS and Windows machines, one step at a time:
 //   node scripts/app-check.mjs <step>
-// mac-dmg | mac-app | mac-update | win-app | win-hostile | win-update | selftest. Everything is for the runner's user only: no administrator, nothing system-wide, and everything a step
+// mac-dmg | mac-app | mac-window | mac-update | win-app | win-window | win-hostile | win-update | selftest. Everything is for the runner's user only: no administrator, nothing system-wide, and everything a step
 // installs it removes again, with a listing of the places an app could leave something, taken before and after, that has to come out the same.
 // Nothing here touches the real site: the program is given a stand-in room service (scripts/stub-rooms.mjs) through FILES_DIRECT_ORIGIN, and updates come from a stand-in
 // feed signed with a key made for this run and thrown away.
@@ -141,13 +141,13 @@ async function findWindowUrl() {
  * packaged runtime on the Epic VM, e2e/window.spec.ts with FD_APP_DIR).
  */
 async function entryTransfer({ node, engine, origin, files }) {
-  const env = { ...process.env, FILES_DIRECT_ORIGIN: origin };
+  // Windows: the browser path of the launcher (no WebView2: FILES_DIRECT_NO_WEBVIEW) is the one whose window is a browser's, with its address on the browser's command line; the app's own window is checked by win-window.
+  // The Mac entry hands the files to the app, whose window is the app's own: it is checked by mac-window.
+  const env = { ...process.env, FILES_DIRECT_ORIGIN: origin, ...(WIN ? { FILES_DIRECT_NO_WEBVIEW: '1' } : {}) };
   if (MAC) {
-    const wf = join(homedir(), 'Library', 'Services', 'Send with Files Direct.workflow', 'Contents', 'document.wflow');
-    const script = join(WORK, 'real-action.sh');
-    writeFileSync(script, run('plutil', ['-extract', 'actions.0.action.ActionParameters.COMMAND_STRING', 'raw', '-o', '-', wf]).stdout);
-    const r = run('/bin/bash', [script, ...files.items], { env, cwd: WORK });
-    ok(r.status === 0, 'the installed Quick Action\'s own script ran with the chosen files (two files and a folder)');
+    // the Quick Action hands the files to the app, whose window is its own (no browser, so no address to read): that entry is checked end to end by mac-window; the bytes by the sends above
+    note('the Quick Action opens the app\'s own window: checked by mac-window, not here');
+    return true;
   } else {
     const commands = [KEYS[0], KEYS[0], KEYS[1]].map(regDefault);
     ok(commands.every(Boolean), 'read the commands of the installed registry entries');
@@ -318,8 +318,8 @@ async function macApp() {
   const wf = join(homedir(), 'Library', 'Services', 'Send with Files Direct.workflow', 'Contents', 'document.wflow');
   ok(await until('the Quick Action', () => existsSync(wf), 40_000), 'the app wrote the Quick Action itself on its first start');
   const script = run('plutil', ['-extract', 'actions.0.action.ActionParameters.COMMAND_STRING', 'raw', '-o', '-', wf]).stdout;
-  ok(script.includes(join(RES(), 'node')) && script.includes(join(RES(), 'files-direct.mjs')), 'the Quick Action runs the app\'s own Node and engine');
-  ok(/open --app -- "\$@"/.test(script), 'it hands the chosen files over as separate arguments after "--", and says it is the app');
+  ok(script.includes(BUNDLE()) && /"\$open" -a "\$app" "\$@"/.test(script), 'the Quick Action hands the chosen files over, as separate arguments, to the Files Direct app itself (open -a), so they open in its own window');
+  ok(!script.includes('files-direct.mjs'), 'and does not run the engine on its own (that would open a browser)');
   run('/System/Library/CoreServices/pbs', ['-update']);
   const pb = run('/System/Library/CoreServices/pbs', ['-dump_pboard']);
   ok(/Send with Files Direct/.test(pb.stdout), 'the Service is registered (pbs -dump_pboard lists "Send with Files Direct")');
@@ -519,7 +519,7 @@ async function winHostile() {
     const work = mkdtempSync(join(WORK, 'hostile-' + kind + '-'));
     const home = join(work, 'App Folder');
     mkdirSync(home);
-    cpSync(join(OUT, 'launcher', kind, 'Files Direct.exe'), join(home, 'Files Direct.exe'));
+    cpSync(join(OUT, 'launcher', kind), home, { recursive: true }); // the launcher, and for the real one the files of its window (WebView2) beside it
     cpSync(process.execPath, join(home, 'node.exe'));
     const log = join(work, 'seen.json');
     // a stand-in engine: writes the words it was started with and what came on its standard input
@@ -537,7 +537,8 @@ async function winHostile() {
     const first = run(exe, [sendtoLine], { windowsVerbatimArguments: true, argv0: '"' + exe + '"', cwd: work, stdio: 'ignore', timeout: 30_000 });
     // the careless launcher never gives the engine a standard input, so what it saw is read from the words it was started with
     const seen = JSON.parse((await until('the stand-in engine (' + kind + ')', () => (kind === 'naive' ? existsSync(log + '.argv') && JSON.stringify({ argv: JSON.parse(readFileSync(log + '.argv', 'utf8')), stdin: [] }) : existsSync(log) && readFileSync(log, 'utf8')), 20_000)) ?? 'null');
-    const expected = ['open', '--app', '--paths-stdin'];
+    // the real launcher asks for the app's own window (--shell-window) when WebView2 is on this machine; the careless one never does
+    const expected = kind === 'naive' ? ['open', '--app', '--paths-stdin'] : ['open', '--app', '--shell-window', '--paths-stdin'];
     const exact = seen && JSON.stringify(seen.argv) === JSON.stringify(expected) && JSON.stringify(seen.stdin) === JSON.stringify(files);
     verbOk.push(exact);
     if (kind === 'real' && !exact) note('the launcher exited ' + first.status + (first.error ? ' (' + first.error + ')' : '') + '; the engine saw argv ' + JSON.stringify(seen?.argv) + ' and ' + (seen?.stdin?.length ?? 'no') + ' paths; first different path: ' + JSON.stringify((seen?.stdin ?? []).find((p, i) => p !== files[i])) + ' expected ' + JSON.stringify(files[(seen?.stdin ?? []).findIndex((p, i) => p !== files[i])]));
@@ -548,7 +549,12 @@ async function winHostile() {
       run(exe, ['verb "' + files[3] + '"'], { windowsVerbatimArguments: true, argv0: '"' + exe + '"', cwd: work, stdio: 'ignore', timeout: 30_000 });
       const one = JSON.parse((await until('the stand-in engine (verb)', () => existsSync(log) && readFileSync(log, 'utf8'), 20_000)) ?? 'null');
       if (!(one && JSON.stringify(one.stdin) === JSON.stringify([files[3]]))) note('verb: the engine saw ' + JSON.stringify(one));
-      ok(one && JSON.stringify(one.argv) === JSON.stringify(['open', '--app', '--gather', '--paths-stdin']) && JSON.stringify(one.stdin) === JSON.stringify([files[3]]), 'the registry entry\'s form ("verb") passes one path and asks the engine to gather the others');
+      ok(one && JSON.stringify(one.argv) === JSON.stringify(['open', '--app', '--shell-window', '--gather', '--paths-stdin']) && JSON.stringify(one.stdin) === JSON.stringify([files[3]]), 'the registry entry\'s form ("verb") passes one path and asks the engine to gather the others');
+      // and with no WebView2 on the machine (FILES_DIRECT_NO_WEBVIEW stands in for it) the engine is asked for what it always was: the browser
+      rmSync(log, { force: true });
+      run(exe, ['verb "' + files[3] + '"'], { windowsVerbatimArguments: true, argv0: '"' + exe + '"', cwd: work, stdio: 'ignore', timeout: 30_000, env: { ...process.env, FILES_DIRECT_NO_WEBVIEW: '1' } });
+      const old = JSON.parse((await until('the stand-in engine (no WebView2)', () => existsSync(log) && readFileSync(log, 'utf8'), 20_000)) ?? 'null');
+      ok(old && JSON.stringify(old.argv) === JSON.stringify(['open', '--app', '--gather', '--paths-stdin']) && JSON.stringify(old.stdin) === JSON.stringify([files[3]]), 'without WebView2 the launcher asks the engine for the browser window, as before');
     }
     ok(noPwned(work, dir, home), 'nothing else ran (' + kind + '): no file called pwned');
   }
@@ -609,7 +615,213 @@ async function selftest() {
   stub.stop();
 }
 
-const steps = { 'mac-dmg': macDmg, 'mac-app': macApp, 'mac-update': macUpdate, 'win-app': winApp, 'win-hostile': winHostile, 'win-update': winUpdate, selftest };
+
+// ---- files-direct-60: the app's own window ----------------------------------------------------------------------------------------------------
+// The app is installed as a person would, and its engine file is replaced by a stand-in (scripts/app-window-stub.mjs; the real one stays beside it) that serves a page of its own: from
+// the outside it can be seen that the window loaded the engine's address with the web engine of the system, that a link out of the page went to the system and not into the window, that a
+// second Send started nothing, and what the window pressed when it was closed. What nobody at the screen would see is NOT seen here: the Dock and taskbar icon, how the window looks, and the
+// red button on a Mac that gives a script no Accessibility.
+
+const readLog = (log) => (existsSync(log) ? readFileSync(log, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)) : []);
+const opensIn = (log) => readLog(log).filter((e) => e.what === 'started' && e.args[0] === 'open');
+
+/** A stand-in for the site a link out of the page goes to: it records who asks. */
+function startOutside() {
+  const hits = [];
+  const server = createServer((req, res) => {
+    hits.push({ url: req.url, ua: req.headers['user-agent'] ?? '' });
+    res.end('outside');
+  });
+  return new Promise((done) => server.listen(0, '127.0.0.1', () => done({ hits, origin: 'http://127.0.0.1:' + server.address().port, stop: () => server.close() })));
+}
+
+/** The stand-in engine in the place of the real one, with its settings beside it. Returns where its log and its "end" file are. */
+function putStubIn(dir, outside) {
+  const real = join(dir, 'files-direct-real.mjs');
+  cpSync(join(dir, 'files-direct.mjs'), real);
+  cpSync(join(import.meta.dirname, 'app-window-stub.mjs'), join(dir, 'files-direct.mjs'));
+  const log = join(WORK, 'window-stub.log');
+  const end = join(WORK, 'window-stub.end');
+  rmSync(log, { force: true });
+  rmSync(end, { force: true });
+  writeFileSync(join(dir, 'window-stub.json'), JSON.stringify({ log, end, outside: outside.origin + '/from-the-window' }));
+  return { log, end, real };
+}
+
+/** The windows of the app that are 480 wide and tall (the size of the Files Direct window), seen from outside the app. null when this machine would not say. */
+const MAC_WINDOWS = "ObjC.import('CoreGraphics'); const all = ObjC.deepUnwrap(ObjC.castRefToObject($.CGWindowListCopyWindowInfo($.kCGWindowListOptionAll, $.kCGNullWindowID))); JSON.stringify(all.filter(function (w) { return /Files ?Direct/.test(w.kCGWindowOwnerName || '') && w.kCGWindowBounds && w.kCGWindowBounds.Width === 480 && w.kCGWindowBounds.Height >= 760; }).map(function (w) { return { w: w.kCGWindowBounds.Width, h: w.kCGWindowBounds.Height, onscreen: Boolean(w.kCGWindowIsOnscreen) }; }))";
+const macWindows = () => {
+  try {
+    return JSON.parse(run('osascript', ['-l', 'JavaScript', '-e', MAC_WINDOWS]).stdout.trim());
+  } catch {
+    return null;
+  }
+};
+
+async function macWindow() {
+  mkdirSync(WORK, { recursive: true });
+  mkdirSync(APPS(), { recursive: true });
+  const before = listing();
+  const dmgName = fileNames(version()).download[TARGET];
+  const mnt = join(WORK, 'mnt-window');
+  mkdirSync(mnt, { recursive: true });
+  const att = run('hdiutil', ['attach', '-nobrowse', '-readonly', '-quiet', '-mountpoint', mnt, join(OUT, dmgName)]);
+  ok(att.status === 0 && existsSync(join(mnt, 'Files Direct.app')), 'the disk image opens' + (att.status ? ': ' + att.stderr : ''));
+  ok(run('ditto', [join(mnt, 'Files Direct.app'), BUNDLE()]).status === 0, 'copied the app into ' + APPS());
+  run('hdiutil', ['detach', '-quiet', mnt]);
+  run('xattr', ['-d', 'com.apple.quarantine', BUNDLE()]);
+  const outside = await startOutside();
+  const stub = putStubIn(RES(), outside);
+  ok(run('codesign', ['--force', '--sign', '-', BUNDLE()]).status === 0, 'the app was sealed again, ad hoc, with the stand-in engine inside');
+
+  ok(run('open', [BUNDLE()]).status === 0, 'open "Files Direct.app"');
+  const pids = await until('the menu-bar program', () => (macRunning().length ? macRunning() : null), 40_000);
+  ok(pids && pids.length === 1, 'the menu-bar program is running, once');
+  ok(await until('the listener', () => readLog(stub.log).some((e) => e.what === 'started' && e.args[0] === 'listen' && e.args.includes('--shell-window')), 40_000), 'the app started the listener of saved devices asking for its own window (listen --app --shell-window)');
+  const wf = join(homedir(), 'Library', 'Services', 'Send with Files Direct.workflow', 'Contents', 'document.wflow');
+  ok(await until('the Quick Action', () => existsSync(wf), 40_000), 'the app wrote the Quick Action itself');
+  const script = join(WORK, 'window-action.sh');
+  writeFileSync(script, run('plutil', ['-extract', 'actions.0.action.ActionParameters.COMMAND_STRING', 'raw', '-o', '-', wf]).stdout);
+
+  // the right-click entry: the Quick Action hands a file to the app
+  const dir = mkdtempSync(join(WORK, 'send-'));
+  const file = join(dir, "it's one file.txt");
+  writeFileSync(file, 'x');
+  const sendOnce = () => run('/bin/bash', [script, file], { cwd: WORK });
+  ok(sendOnce().status === 0, 'the installed Quick Action\'s own script ran with the chosen file');
+  const started = await until('the engine run for the file', () => opensIn(stub.log)[0], 40_000);
+  ok(started && JSON.stringify(started.args) === JSON.stringify(['open', '--app', '--shell-window', '--', file]), 'the app started one run of the engine for the file, asking for its own window, the name as one argument' + (started ? '' : ' (the app did not take the file from open -a: the Info.plist document types, or application(_:openFiles:), are not enough here)'));
+  const loaded = await until('the page to be asked for', () => readLog(stub.log).find((e) => e.what === 'page'), 40_000);
+  ok(Boolean(loaded) && /AppleWebKit/.test(loaded.ua) && !/Chrome\/|Edg\//.test(loaded.ua), 'the page was asked for by the app\'s own web view (WebKit), not by a browser: ' + (loaded?.ua ?? 'not asked for'));
+  const wins = await until('the window', () => (macWindows()?.length ? macWindows() : null), 20_000);
+  if (wins === null && macWindows() === null) note('the window list could not be read on this machine: the window itself is NOT seen here');
+  else ok(wins?.length === 1, 'one window of the app, 480 wide, is on the screen list: ' + JSON.stringify(wins));
+  run('screencapture', ['-x', join(SHOTS, 'mac-app-window.png')]); // best effort: a runner may have no screen
+
+  // the page sends the window to the outside address: the system's browser gets it and the window stays on the page
+  const hit = await until('the link out of the page', () => outside.hits[0], 40_000);
+  ok(Boolean(hit), 'a link out of the page went to the system: the outside address was asked for (' + (hit?.ua ?? 'nobody') + ')');
+  const pings = () => readLog(stub.log).filter((e) => e.what === 'ping').length;
+  const p0 = pings();
+  await sleep(2500);
+  ok(pings() > p0, 'the window stayed on the page: it goes on asking the engine for its state');
+
+  // a second Send while the window is open
+  sendOnce();
+  await sleep(5000);
+  ok(opensIn(stub.log).length === 1, 'a second Send started no second run of the engine (' + opensIn(stub.log).length + ' runs)');
+  if (macWindows()) ok(macWindows().length === 1, 'and no second window');
+
+  // the meeting is over (what the engine says when the page's Close is pressed): the window goes, the menu-bar program stays
+  writeFileSync(stub.end, '');
+  const gone = await until('the window to close', () => macWindows()?.length === 0, 20_000);
+  if (macWindows() === null) note('the window list could not be read: that the window closed is NOT seen here');
+  else ok(gone, 'the window closed when the engine said the meeting was over');
+  ok(macRunning().length === 1, 'the menu-bar program is still running');
+  ok(readLog(stub.log).some((e) => e.what === 'started' && e.args[0] === 'listen'), 'and its listener is still the one it started');
+
+  // closed by the person: the red button, when this machine lets a script press it
+  rmSync(stub.end, { force: true });
+  sendOnce();
+  await until('a second window', () => macWindows()?.length === 1, 30_000);
+  const press = run('osascript', ['-e', 'tell application "System Events" to tell process "FilesDirect" to click button 1 of window 1']);
+  if (press.status !== 0) note('closing by the red button was NOT tried: a script on this machine is not allowed to press it (' + (press.stderr || '').trim().slice(0, 160) + ')');
+  else {
+    ok(await until('the page\'s own Close', () => readLog(stub.log).find((e) => e.what === 'act' && /"do":"close"/.test(e.body)), 20_000), 'closing the window pressed the page\'s own Close (the engine was told)');
+    ok(await until('the window to close', () => macWindows()?.length === 0, 20_000), 'and the window closed');
+    ok(macRunning().length === 1, 'and the menu-bar program is still running');
+  }
+
+  // Remove, with the real engine, and everything the app made goes
+  macStop();
+  await until('the menu-bar program to end', () => macRunning().length === 0, 15_000);
+  const rm = run(join(RES(), 'node'), [stub.real, 'app', 'remove']);
+  note('app remove, exit ' + rm.status + ':\n' + (rm.stdout + rm.stderr).trim());
+  rmSync(BUNDLE(), { recursive: true, force: true });
+  run('/System/Library/CoreServices/pbs', ['-update']);
+  outside.stop();
+  sameListing(before, listing(), 'after Remove');
+}
+
+/** The ids of the programs that have a window called "Files Direct" open (the tray program has none). */
+/** The temporary profiles of the app's windows that are on disk now (one per window, in the temporary folder, deleted when the window closes). */
+const winProfiles = () => names(tmpdir()).filter((n) => n.startsWith('files-direct-window-'));
+
+const winWindows = () => run('powershell.exe', ['-NoProfile', '-Command', "Get-Process | Where-Object { $_.MainWindowTitle -eq 'Files Direct' } | ForEach-Object { $_.Id }"]).stdout.split(/\r?\n/).filter(Boolean);
+
+async function winWindow() {
+  mkdirSync(WORK, { recursive: true });
+  const before = listing();
+  const setup = join(OUT, fileNames(version()).download['win-x64']);
+  await winInstall(setup, 'window');
+  const exe = join(APPDIR(), 'Files Direct.exe');
+  ok(['Microsoft.Web.WebView2.Core.dll', 'Microsoft.Web.WebView2.WinForms.dll', 'WEBVIEW2-LICENSE.txt', join('runtimes', 'win-x64', 'native', 'WebView2Loader.dll')].every((f) => existsSync(join(APPDIR(), f))), 'the files of the app\'s window (WebView2) were installed beside the program');
+  // the tray program that the installer started uses the real engine: it is stopped, the stand-in goes in, and the tray program starts again
+  run(exe, ['quit'], { stdio: 'ignore' });
+  await until('the tray program to end', () => trayRunning().length === 0, 20_000);
+  const outside = await startOutside();
+  const stub = putStubIn(APPDIR(), outside);
+  spawn(exe, [], { stdio: 'ignore', detached: true }).unref();
+  const tray = await until('the tray program', () => (trayRunning().length ? trayRunning() : null), 40_000);
+  ok(tray && tray.length === 1, 'the tray program is running, once');
+  ok(await until('the listener', () => readLog(stub.log).some((e) => e.what === 'started' && e.args[0] === 'listen' && e.args.includes('--shell-window')), 40_000), 'the tray program started the listener asking for its own window (listen --app --shell-window)');
+
+  // what Explorer does for the right-click entry: the registry command with the chosen file in place of %1
+  const dir = mkdtempSync(join(WORK, 'send-'));
+  const file = join(dir, "it's one file.txt");
+  writeFileSync(file, 'x');
+  const verb = (env = {}) => spawn(exe, ['verb "' + file + '"'], { windowsVerbatimArguments: true, argv0: '"' + exe + '"', cwd: WORK, stdio: 'ignore', detached: true, env: { ...process.env, ...env } }).unref();
+  const profilesBefore = winProfiles();
+  verb();
+  const started = await until('the engine run for the file', () => opensIn(stub.log)[0], 40_000);
+  ok(started && JSON.stringify(started.args) === JSON.stringify(['open', '--app', '--shell-window', '--gather', '--paths-stdin']), 'the right-click entry started one run of the engine asking for the app\'s own window' + (started ? '' : ' (no run was started)'));
+  const loaded = await until('the page to be asked for', () => readLog(stub.log).find((e) => e.what === 'page'), 40_000);
+  ok(Boolean(loaded) && /Edg\//.test(loaded.ua), 'the page was asked for by the app\'s own web view (the Microsoft Edge engine), not by a browser started for it: ' + (loaded?.ua ?? 'not asked for'));
+  const wins = await until('the window', () => (winWindows().length ? winWindows() : null), 20_000);
+  ok(wins && wins.length === 1, 'one window called "Files Direct" is open (in the program of the right-click: ' + JSON.stringify(wins) + ')');
+  run('powershell.exe', ['-NoProfile', '-Command', "Add-Type -AssemblyName System.Windows.Forms,System.Drawing; $b=[System.Windows.Forms.Screen]::PrimaryScreen.Bounds; $bmp=New-Object System.Drawing.Bitmap $b.Width,$b.Height; $g=[System.Drawing.Graphics]::FromImage($bmp); $g.CopyFromScreen($b.Location,[System.Drawing.Point]::Empty,$b.Size); $bmp.Save($env:FD_SHOT)"], { env: { ...process.env, FD_SHOT: join(SHOTS, 'win-app-window.png') } });
+
+  const hit = await until('the link out of the page', () => outside.hits[0], 40_000);
+  ok(Boolean(hit), 'a link out of the page went to the system: the outside address was asked for (' + (hit?.ua ?? 'nobody') + ')');
+  const pings = () => readLog(stub.log).filter((e) => e.what === 'ping').length;
+  const p0 = pings();
+  await sleep(2500);
+  ok(pings() > p0, 'the window stayed on the page: it goes on asking the engine for its state');
+
+  // a second Send while the window is open
+  verb();
+  await sleep(5000);
+  ok(opensIn(stub.log).length === 1, 'a second Send started no second run of the engine (' + opensIn(stub.log).length + ' runs)');
+  ok(winWindows().length === 1, 'and no second window');
+
+  // closed by the person: the window presses the page's own Close, the engine says the meeting is over, the window and its program end, the tray program stays
+  const closed = run('powershell.exe', ['-NoProfile', '-Command', "(Get-Process | Where-Object { $_.MainWindowTitle -eq 'Files Direct' }).CloseMainWindow()"]);
+  note('CloseMainWindow: ' + closed.stdout.trim());
+  ok(await until('the page\'s own Close', () => readLog(stub.log).find((e) => e.what === 'act' && /"do":"close"/.test(e.body)), 20_000), 'closing the window pressed the page\'s own Close (the engine was told)');
+  ok(await until('the window to go', () => winWindows().length === 0, 20_000), 'and the window closed');
+  ok(await until('the program of the right-click to end', () => trayRunning().length === 1, 15_000), 'the tray program is still running (and it is the only program of the app left)');
+  ok(readLog(stub.log).some((e) => e.what === 'started' && e.args[0] === 'listen'), 'and its listener is still the one it started');
+  // the program of the right-click is gone now (only the tray program is left): the window's profile went before it did, not after
+  const leftBehind = winProfiles().filter((n) => !profilesBefore.includes(n));
+  ok(leftBehind.length === 0, 'the window\'s temporary profile is gone with the program of the right-click' + (leftBehind.length ? ' (left behind: ' + leftBehind.join(', ') + ')' : ''));
+
+  // no WebView2 on this machine (FILES_DIRECT_NO_WEBVIEW stands in for it): the browser path, as before
+  verb({ FILES_DIRECT_NO_WEBVIEW: '1' });
+  const old = await until('the engine run without WebView2', () => opensIn(stub.log)[1], 40_000);
+  ok(old && JSON.stringify(old.args) === JSON.stringify(['open', '--app', '--gather', '--paths-stdin']), 'without WebView2 the entry asks the engine for the browser window, as before');
+  ok(winWindows().length === 0, 'and the app shows no window of its own');
+
+  // Remove
+  run(exe, ['quit'], { stdio: 'ignore' });
+  await until('the tray program to end', () => trayRunning().length === 0, 20_000);
+  const un = run(join(APPDIR(), 'unins000.exe'), ['/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART'], { stdio: 'ignore', timeout: 300_000 });
+  ok(un.status === 0, 'the uninstaller ran silently');
+  ok(await until('the app folder to go', () => !existsSync(APPDIR()), 90_000), 'the app folder is gone');
+  outside.stop();
+  sameListing(before, listing(), 'after uninstalling');
+}
+
+const steps = { 'mac-dmg': macDmg, 'mac-app': macApp, 'mac-window': macWindow, 'mac-update': macUpdate, 'win-app': winApp, 'win-window': winWindow, 'win-hostile': winHostile, 'win-update': winUpdate, selftest };
 if (typeof process !== 'undefined' && process.argv?.[1] && import.meta.url === new URL('file://' + (WIN ? '/' : '') + process.argv[1].replace(/\\/g, '/')).href) {
   const step = steps[process.argv[2]];
   if (!step) {

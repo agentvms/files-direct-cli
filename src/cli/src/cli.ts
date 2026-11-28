@@ -10,7 +10,8 @@ import { doorOf } from './door.ts';
 import { TEST_LANE_HEADER } from '../../shared/config.ts';
 import { PASSWORD_MAX_CHARS } from '../../shared/config.ts';
 import { installBrowserParts } from './node-env.ts';
-import { type WindowHandle, launchWindow } from './browser.ts';
+import type { WindowHandle } from './browser.ts';
+import { showWindow, windowEnded } from './show.ts';
 import { type GatherOptions, gather } from './gather.ts';
 import { type Launch, type MenuEffects, MenuUnsupported, installMenu, menuStatus, removeMenu } from './menu.ts';
 import { nodeEffects } from './menu-node.ts';
@@ -91,7 +92,7 @@ is saved, or after --timeout minutes (default 30) when no files have started to 
 
 Open shows a small window with the link, a QR code and the nine-digit code for what you named, and then the progress; Cancel there sends nothing. With no files it opens on a start
 page where you can ask someone for files or receive by link or code. What the window receives is saved in your Downloads folder, or in --to. Nothing leaves your computer until the
-other device has joined and you see it accept. --no-window prints the window's address (for this computer only) instead of opening it.
+other device has joined and you see it accept. --no-window prints the window's address (for this computer only) instead of opening it. --shell-window (the Files Direct app) prints it as one line for the app to show in its own window.
 
 Menu install adds the entry for you only, with no administrator: on a Mac a Quick Action in ~/Library/Services, on Windows the entry for files and folders (under "Show more
 options" on Windows 11) and a Send to shortcut. Run menu remove before you uninstall the program: it takes out exactly what install put in.
@@ -226,6 +227,7 @@ export async function runCli(argv: string[], io: Io): Promise<number> {
         gather: { type: 'boolean' },
         detach: { type: 'boolean' },
         'no-window': { type: 'boolean' },
+        'shell-window': { type: 'boolean' },
         'no-qr': { type: 'boolean' },
         app: { type: 'boolean' },
         'paths-stdin': { type: 'boolean' },
@@ -248,6 +250,8 @@ export async function runCli(argv: string[], io: Io): Promise<number> {
     else io.err(text + ' Run files-direct help.');
     return 2;
   };
+  if (v['shell-window'] && (command !== 'open' && command !== 'listen')) return usage('--shell-window is for open and listen.');
+  if (v['shell-window'] && v['no-window']) return usage('--shell-window shows the window in the app, and --no-window shows none: choose one.');
   if (command === 'menu') return runMenu(args.positionals, io, { app: Boolean(v.app), launcher: v.launcher });
   if (command === 'app') return runApp(args.positionals, io, { json, original: v.original, waitFor: v['wait-for'] });
   if (command === 'open' && v.detach) return detach(rest, io);
@@ -284,8 +288,8 @@ export async function runCli(argv: string[], io: Io): Promise<number> {
   };
 
   installBrowserParts();
-  if (command === 'listen') return runListen({ app: Boolean(v.app), noWindow: Boolean(v['no-window']), json, io, env: await roomEnv(origin, headers, true, Boolean(v.app)), book: new SavedBook(devicesFile(io.env), { origin, headers }), downloads: resolve(v.to ?? join(io.env.HOME ?? io.env.USERPROFILE ?? homedir(), 'Downloads')), emit });
-  if (command === 'open') return runOpen(args.positionals, { gather: Boolean(v.gather), noWindow: Boolean(v['no-window']), to: v.to, json, pathsStdin: Boolean(v['paths-stdin']) }, io, await roomEnv(origin, headers, true, Boolean(v.app)), usage);
+  if (command === 'listen') return runListen({ app: Boolean(v.app), noWindow: Boolean(v['no-window']), shell: Boolean(v['shell-window']), json, io, env: await roomEnv(origin, headers, true, Boolean(v.app)), book: new SavedBook(devicesFile(io.env), { origin, headers }), downloads: resolve(v.to ?? join(io.env.HOME ?? io.env.USERPROFILE ?? homedir(), 'Downloads')), emit });
+  if (command === 'open') return runOpen(args.positionals, { gather: Boolean(v.gather), noWindow: Boolean(v['no-window']), shell: Boolean(v['shell-window']), to: v.to, json, pathsStdin: Boolean(v['paths-stdin']) }, io, await roomEnv(origin, headers, true, Boolean(v.app)), usage);
   const env = await roomEnv(origin, headers);
   let run: { done: Promise<Result>; cancel(): void };
   if (command === 'send') {
@@ -402,7 +406,7 @@ async function runMenu(words: string[], io: Io, o: { app: boolean; launcher?: st
 
 async function runOpen(
   given: string[],
-  o: { gather: boolean; noWindow: boolean; to?: string; json: boolean; pathsStdin?: boolean },
+  o: { gather: boolean; noWindow: boolean; shell: boolean; to?: string; json: boolean; pathsStdin?: boolean },
   io: Io,
   env: Awaited<ReturnType<typeof roomEnv>>,
   usage: (text: string) => number,
@@ -438,18 +442,9 @@ async function runOpen(
   const desk = new Desk({ env, downloads, picked, book: new SavedBook(devicesFile(io.env), { origin: env.origin, headers: env.headers }) });
   const server = await serveDesk(desk, { idleMs: io.windowIdleMs });
   const stopInterrupt = io.onInterrupt?.(() => desk.abandon());
-  let handle: WindowHandle | null = null;
-  if (o.noWindow) {
-    io.out(o.json ? JSON.stringify({ event: 'window', url: server.url, at: new Date().toISOString() }) : `Window: ${server.url}`);
-  } else {
-    handle = await (io.window ?? launchWindow)(server.url);
-    if (!handle) io.err('No browser was found to show the window. Open this address in a browser on this computer: ' + server.url);
-    else {
-      void handle.closed.then(() => desk.abandon());
-      if (o.json) io.out(JSON.stringify({ event: 'window', url: server.url, how: handle.how, ...(handle.pid === undefined ? {} : { pid: handle.pid }), at: new Date().toISOString() }));
-    }
-  }
+  const handle = await showWindow(server, desk, o, io);
   const code = await desk.ended;
+  windowEnded(server, o, io);
   stopInterrupt?.();
   await handle?.close();
   await server.close();

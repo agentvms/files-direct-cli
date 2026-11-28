@@ -48,6 +48,10 @@ The ask is the yes, with limits: an offer over `--max-size` (default: none), ove
 
 Keep it running until the files arrive: nothing is stored on our servers, so a request only works while it is. A program that runs `receive` on an ask link is told so (`ask_link`), because there is nothing offered to take.
 
+## Previews of photos
+
+When the other device is a page that draws small pictures of photos before the person says yes (the web page, the window or the app), `send` gives it one for each photo: JPEG, PNG and GIF files, up to 30 a batch, smaller and fewer (12) when the files pass through our servers. The pictures go over the same connection as the files and nowhere else. WebP, AVIF and HEIC photos, videos and any other file have no small picture and show as before; the files themselves always go through whole and unchanged. A page, or a program, from before previews gets none. The decoding is built into the program (nothing more to install) and runs apart from the connection, so a big photo never slows the transfer down.
+
 ## Remember a device: send with no link or code
 
 ```
@@ -77,7 +81,7 @@ adds "Send with Files Direct" for you only, with no administrator password. On a
 files-direct open [<file or folder>...] [--to <folder>] [--no-window] [--json]
 ```
 
-is what the menu runs, and you can run it yourself. With files it sends them, with the window as above. With none it opens a start page: ask someone for files (the same ask as `files-direct ask`) or receive with a link or code (as `receive`), saved into your Downloads folder, or `--to`. Nothing is replaced. The window is the program's own page, served on this computer only (127.0.0.1, a random port, a secret in the address) and shown by Edge or Chrome that is already installed, as a window with no tabs; with neither, your default browser opens it as a tab. Closing the window ends the program. `--no-window` prints the window's address instead, and with `--json` the line `{"event":"window","url":"..."}`. The page can press buttons but can never name a file or a folder: the files come from what you ran the program with. Size: the package is 66 kB; installed with what it needs it is about 26 to 27 MB; Node 22 and the browser are not part of it.
+is what the menu runs, and you can run it yourself. With files it sends them, with the window as above. With none it opens a start page: ask someone for files (the same ask as `files-direct ask`) or receive with a link or code (as `receive`), saved into your Downloads folder, or `--to`. Nothing is replaced. The window is the program's own page, served on this computer only (127.0.0.1, a random port, a secret in the address) and shown by Edge or Chrome that is already installed, as a window with no tabs; with neither, your default browser opens it as a tab. Closing the window ends the program. `--no-window` prints the window's address instead, and with `--json` the line `{"event":"window","url":"..."}`. `--shell-window` (what the Files Direct app passes) prints that line as `{"event":"window","url":"...","shell":true}` for the app to show in a window of its own, starts no browser, and prints `{"event":"closed","url":"..."}` when the meeting is over. The page can press buttons but can never name a file or a folder: the files come from what you ran the program with. Size: the package is 66 kB; installed with what it needs it is about 26 to 27 MB; Node 22 and the browser are not part of it.
 
 ## For scripts and agents: `--json`
 
@@ -162,7 +166,7 @@ MIT.
 Every version is attached to a release here as a package file. This works whether or not the package is on npm:
 
 ```
-npm install -g https://github.com/agentvms/files-direct-cli/releases/download/v0.2.2/files-direct-0.2.2.tgz
+npm install -g https://github.com/agentvms/files-direct-cli/releases/download/v0.2.3/files-direct-0.2.3.tgz
 ```
 
 ## The plugin

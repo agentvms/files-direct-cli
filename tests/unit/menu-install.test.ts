@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { MAC_WORKFLOW, MENU_TEXT, WIN_KEYS, WIN_SENDTO, installMenu, macInfoPlist, macWorkflow, menuStatus, removeMenu, windowsRegText, windowsSendToArguments, windowsVerbCommand, type Launch, type MenuEffects } from '../../src/cli/src/menu.ts';
+import { MAC_WORKFLOW, MENU_TEXT, appBundle, WIN_KEYS, WIN_SENDTO, installMenu, macInfoPlist, macWorkflow, menuStatus, removeMenu, windowsRegText, windowsSendToArguments, windowsVerbCommand, type Launch, type MenuEffects } from '../../src/cli/src/menu.ts';
 
 // files-direct-30, done-when 2: what menu install writes, and that menu remove takes out exactly that and nothing else.
 // The machine here is made up: a table of files and a table of registry keys, with a few things in them that are not ours.
@@ -168,11 +168,31 @@ describe('for the double-click app', () => {
   const APP: Launch = { node: '/Users/ann/Applications/Files Direct.app/Contents/Resources/node', script: '/Users/ann/Applications/Files Direct.app/Contents/Resources/files-direct.mjs', app: true };
   const WAPP: Launch = { node: 'C:\\Users\\Ann\\AppData\\Local\\Programs\\Files Direct\\node.exe', script: 'C:\\Users\\Ann\\AppData\\Local\\Programs\\Files Direct\\files-direct.mjs', app: true, launcher: 'C:\\Users\\Ann\\AppData\\Local\\Programs\\Files Direct\\Files Direct.exe' };
 
-  it('on a Mac: the Quick Action runs the app\'s own engine and tells it that it is the app, files after "--"', () => {
+  it('on a Mac: the Quick Action hands the files to the Files Direct app itself (files-direct-60), so they open in its own window', () => {
     const wf = macWorkflow(APP);
-    expect(wf).toContain('open --app -- &quot;$@&quot;');
-    expect(wf).toContain("node='/Users/ann/Applications/Files Direct.app/Contents/Resources/node'");
-    expect(macWorkflow(LAUNCH)).not.toContain('--app');
+    expect(wf).toContain("app='/Users/ann/Applications/Files Direct.app'");
+    expect(wf).toContain('&quot;$open&quot; -a &quot;$app&quot; &quot;$@&quot;');
+    expect(wf).toContain('open=/usr/bin/open');
+    // not the engine run on its own (that would open a browser), and no file in the script text
+    expect(wf).not.toContain('open --app');
+    expect(wf).not.toContain('files-direct.mjs');
+    expect(wf).not.toContain('Contents/Resources/node');
+  });
+
+  it('on a Mac: the command-line program\'s entry is unchanged (the engine, no app)', () => {
+    const wf = macWorkflow(LAUNCH);
+    expect(wf).not.toContain('--app');
+    expect(wf).not.toContain('-a &quot;$app&quot;');
+    expect(wf).toContain('open -- &quot;$@&quot;');
+    // an app flag on a program that is not inside an app folder has no app to hand the files to: the engine runs as it always did
+    const loose = macWorkflow({ node: '/opt/n/node', script: '/opt/n/files-direct.mjs', app: true });
+    expect(loose).toContain('open --app -- &quot;$@&quot;');
+  });
+
+  it('knows the app folder only from where the engine file sits inside it', () => {
+    expect(appBundle('/Users/ann/Applications/Files Direct.app/Contents/Resources/files-direct.mjs')).toBe('/Users/ann/Applications/Files Direct.app');
+    expect(appBundle('/Applications/Files Direct.app/Contents/Resources/files-direct.mjs')).toBe('/Applications/Files Direct.app');
+    for (const s of ['/opt/files-direct.mjs', '/Applications/Files Direct.app/Contents/MacOS/files-direct.mjs', '/Applications/Files Direct.app/Contents/Resources/x/files-direct.mjs', 'Files Direct.app/Contents/Resources/files-direct.mjs']) expect(appBundle(s), s).toBeNull();
   });
 
   it('on a Mac: refuses to write an entry from a place the app will not stay in (a disk image, or the temporary copy macOS makes of a download)', async () => {

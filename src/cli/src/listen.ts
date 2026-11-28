@@ -6,16 +6,18 @@
  */
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { launchWindow, type WindowHandle } from './browser.ts';
 import type { Io } from './cli.ts';
 import type { ProgramEvent, RoomEnv } from './room.ts';
 import type { SavedBook } from './saved.ts';
+import { showWindow, windowEnded } from './show.ts';
 import { dataDir } from './store.ts';
 import { Desk, serveDesk } from './window.ts';
 
 export interface ListenOptions {
   app: boolean;
   noWindow: boolean;
+  /** The app shows each window itself (files-direct-60): the program prints the address of the page and starts no browser. */
+  shell?: boolean;
   json: boolean;
   io: Io;
   env: RoomEnv;
@@ -63,17 +65,10 @@ export async function runListen(o: ListenOptions): Promise<number> {
     emit({ event: 'invite', device: dev.name });
     const desk = (current = new Desk({ env, book, downloads: o.downloads, invited: { dev, nonce } }));
     const server = await serveDesk(desk, { idleMs: io.windowIdleMs });
-    let handle: WindowHandle | null = null;
-    if (o.noWindow) io.out(o.json ? JSON.stringify({ event: 'window', url: server.url, at: new Date().toISOString() }) : 'Window: ' + server.url);
-    else {
-      handle = await (io.window ?? launchWindow)(server.url);
-      if (!handle) io.err('No browser was found to show the window. Open this address in a browser on this computer: ' + server.url);
-      else {
-        void handle.closed.then(() => desk.abandon());
-        if (o.json) io.out(JSON.stringify({ event: 'window', url: server.url, how: handle.how, ...(handle.pid === undefined ? {} : { pid: handle.pid }), at: new Date().toISOString() }));
-      }
-    }
+    const how = { noWindow: o.noWindow, shell: Boolean(o.shell), json: o.json };
+    const handle = await showWindow(server, desk, how, io);
     await desk.ended;
+    windowEnded(server, how, io);
     await handle?.close();
     await server.close();
     current = null;

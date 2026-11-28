@@ -120,7 +120,7 @@ const stubEngine = (log) => "import { writeFileSync } from 'node:fs'; const chun
  * so the check can follow a hostile name from the menu to the program that would send it; the check's package is otherwise the real one.
  */
 export async function buildPackage({ stub, tag = 'package' } = {}) {
-  const { buildEngine, compileLauncher, copyNative, fetchNode } = await import('./app-build.mjs');
+  const { buildEngine, compileLauncher, copyNative, fetchNode, fetchWebView2, placeWebView2 } = await import('./app-build.mjs');
   const { iconPng } = await import('./icon-png.mjs');
   const out = resolve(process.env.FD_STORE_OUT ?? 'store-out');
   const work = resolve(process.env.FD_STORE_WORK ?? join(process.env.RUNNER_TEMP ?? 'store-work', 'files-direct-store'));
@@ -141,7 +141,10 @@ export async function buildPackage({ stub, tag = 'package' } = {}) {
   }
   writeFileSync(join(layout, 'app.json'), JSON.stringify({ target: 'win-x64', version }) + '\n');
   copyNative('win-x64', layout);
-  compileLauncher(join(layout, LAUNCHER_FILE), join(work, 'launcher-' + tag), version, false, resolve('app', 'store', 'FilesDirect.exe.manifest'));
+  // the window of the app is a WebView2: its files (checked against a fixed SHA-256) are part of the package, beside the launcher
+  const webview = await fetchWebView2(join(work, 'cache', 'webview2'));
+  compileLauncher(join(layout, LAUNCHER_FILE), join(work, 'launcher-' + tag), version, false, resolve('app', 'store', 'FilesDirect.exe.manifest'), webview);
+  placeWebView2(webview, layout);
   compileHandler(layout, join(work, 'handler-' + tag));
   for (const [file, px] of [['StoreLogo', 50], ['Square44x44Logo', 44], ['Square150x150Logo', 150]]) writeFileSync(join(layout, 'Assets', file + '.png'), iconPng(px, { samples: 4 }));
   writeFileSync(join(layout, 'AppxManifest.xml'), renderManifest(settings, version));

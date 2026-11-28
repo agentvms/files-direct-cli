@@ -69,7 +69,11 @@ jobs:
         run: node scripts/app-check.mjs mac-dmg
       - name: Download, open, run, send two files and a folder, a hostile name through the Quick Action, Remove
         run: node scripts/app-check.mjs mac-app
+      - name: The app's own window (a stand-in engine serves a page; the window loads it, a link out goes to the browser, a second Send starts nothing, closing leaves the menu-bar program)
+        if: ${{ !cancelled() }}
+        run: node scripts/app-check.mjs mac-window
       - name: Update from a stand-in feed (a newer build is installed; a changed, wrongly signed, older or longer one is refused), then Remove
+        if: ${{ !cancelled() }}
         run: node scripts/app-check.mjs mac-update
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
@@ -102,6 +106,9 @@ jobs:
       - name: Install with no administrator, the tray program, the entries, send two files and a folder, uninstall leaves nothing
         if: ${{ !cancelled() }}
         run: node scripts/app-check.mjs win-app
+      - name: The app's own window (a stand-in engine serves a page; the window loads it, a link out goes to the browser, a second Send focuses it, closing leaves the tray program; no WebView2 means the browser)
+        if: ${{ !cancelled() }}
+        run: node scripts/app-check.mjs win-window
       - name: Update from a stand-in feed (a newer build is installed; a changed, wrongly signed or older one is refused), then uninstall
         if: ${{ !cancelled() }}
         run: node scripts/app-check.mjs win-update

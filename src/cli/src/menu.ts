@@ -32,8 +32,41 @@ export const shellQuote = (s: string): string => "'" + s.replace(/'/g, "'\\''") 
 
 const NOTE_GONE = 'Files Direct is no longer installed here. Remove this entry from the Services folder in your Library.';
 
-/** The shell script the Finder Quick Action runs. The chosen files and folders reach it as its arguments. */
+/** The app's own folder (the `.app`), from where its engine file sits inside it. Null for a program that is not inside one. */
+export function appBundle(script: string): string | null {
+  return /^(\/.*\.app)\/Contents\/Resources\/[^/]+$/.exec(script)?.[1] ?? null;
+}
+
+/**
+ * The shell script the Finder Quick Action runs. The chosen files and folders reach it as its arguments.
+ * The app's entry (files-direct-60) hands them to the Files Direct app itself (`open -a`, which starts it when it is not running), so they open in the app's own window and not in a browser.
+ * Each path stays one argument, always an absolute one (a name that starts with "-" cannot be taken for an option of `open`), and nothing a person named is ever inside script text.
+ */
 export function quickActionScript(l: Launch): string {
+  const bundle = l.app ? appBundle(l.script) : null;
+  if (bundle) {
+    return [
+      `app=${shellQuote(bundle)}`,
+      'open=/usr/bin/open',
+      'if [ ! -d "$app" ]; then',
+      `  /usr/bin/osascript -e ${shellQuote(`display notification "${NOTE_GONE}" with title "Files Direct"`)} >/dev/null 2>&1`,
+      '  exit 0',
+      'fi',
+      'n=$#',
+      'while [ "$n" -gt 0 ]; do',
+      '  f=$1',
+      '  shift',
+      '  case "$f" in',
+      '    /*) ;;',
+      '    *) f="$PWD/$f" ;;',
+      '  esac',
+      '  set -- "$@" "$f"',
+      '  n=$((n - 1))',
+      'done',
+      '"$open" -a "$app" "$@" >/dev/null 2>&1 &',
+      '',
+    ].join('\n');
+  }
   return [
     `node=${shellQuote(l.node)}`,
     `script=${shellQuote(l.script)}`,

@@ -114,10 +114,15 @@ export function iconIco(sizes = [16, 32, 48, 256]) {
 // ---- the Mac app -------------------------------------------------------------------------------------------------------------------------
 
 export const BUNDLE_ID = 'com.tnyforge.filesdirect';
-const infoPlist = (version) => '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0">\n<dict>\n' +
+/**
+ * The files and folders the right-click entry hands to the app (files-direct-60): the app is named by the entry (open -a), so it never becomes anyone's way of opening a kind of file
+ * (LSHandlerRank None), but it says it can be given any file or folder, so the system hands them over.
+ */
+export const DOCUMENT_TYPES = '\n\t<key>CFBundleDocumentTypes</key>\n\t<array>\n\t\t<dict>\n\t\t\t<key>CFBundleTypeName</key>\n\t\t\t<string>Files and folders</string>\n\t\t\t<key>CFBundleTypeRole</key>\n\t\t\t<string>Viewer</string>\n\t\t\t<key>LSHandlerRank</key>\n\t\t\t<string>None</string>\n\t\t\t<key>LSItemContentTypes</key>\n\t\t\t<array>\n\t\t\t\t<string>public.item</string>\n\t\t\t\t<string>public.folder</string>\n\t\t\t</array>\n\t\t</dict>\n\t</array>';
+export const infoPlist = (version) => '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0">\n<dict>\n' +
   [['CFBundleName', 'Files Direct'], ['CFBundleDisplayName', 'Files Direct'], ['CFBundleIdentifier', BUNDLE_ID], ['CFBundleExecutable', 'FilesDirect'], ['CFBundlePackageType', 'APPL'], ['CFBundleShortVersionString', version], ['CFBundleVersion', version], ['CFBundleIconFile', 'AppIcon'], ['LSMinimumSystemVersion', '13.5']]
     .map(([k, v]) => '\t<key>' + k + '</key>\n\t<string>' + v + '</string>').join('\n') +
-  '\n\t<key>LSUIElement</key>\n\t<true/>\n\t<key>NSHighResolutionCapable</key>\n\t<true/>\n</dict>\n</plist>\n';
+  '\n\t<key>LSUIElement</key>\n\t<true/>\n\t<key>NSHighResolutionCapable</key>\n\t<true/>' + DOCUMENT_TYPES + '\n</dict>\n</plist>\n';
 
 function macIcns(work) {
   const set = join(work, 'AppIcon.iconset');
@@ -136,7 +141,7 @@ function buildMacApp(target, stage, work, info) {
   const res = join(app, 'Contents', 'Resources');
   const exe = join(app, 'Contents', 'MacOS', 'FilesDirect');
   mkdirSync(join(app, 'Contents', 'MacOS'), { recursive: true });
-  sh('swiftc', ['-O', '-o', exe, join('app', 'mac', 'main.swift'), '-framework', 'AppKit']);
+  sh('swiftc', ['-O', '-o', exe, join('app', 'mac', 'main.swift'), '-framework', 'AppKit', '-framework', 'WebKit']);
   cpSync(macIcns(work), join(res, 'AppIcon.icns'));
   writeFileSync(join(app, 'Contents', 'Info.plist'), infoPlist(info.version));
   writeFileSync(join(app, 'Contents', 'PkgInfo'), 'APPL????');
@@ -184,17 +189,59 @@ function makeDmg(app, out, work) {
 
 // ---- the Windows app -----------------------------------------------------------------------------------------------------------------------
 
+/**
+ * WebView2 (files-direct-60): the window of the Windows app is a WebView2, the Microsoft Edge engine that Windows 10 and 11 already have. Its three files come from Microsoft's own NuGet package at one
+ * fixed version, checked against a fixed SHA-256 before anything is unpacked (the same rule as Node's archive above). They sit beside Files Direct.exe; nothing else is downloaded for it.
+ */
+export const WEBVIEW2_VERSION = '1.0.4370.26';
+export const WEBVIEW2_SHA256 = '1c0dacac84b70109b3fd42f90c53a0ba942abc3a87590d7a4e0ccd86e4a06cf4';
+export const WEBVIEW2_URL = 'https://api.nuget.org/v3-flatcontainer/microsoft.web.webview2/' + WEBVIEW2_VERSION + '/microsoft.web.webview2.' + WEBVIEW2_VERSION + '.nupkg';
+/** Inside the package, then where it goes beside the program: the managed pieces (net462, which the .NET Framework of every Windows runs), the loader for x64 where the managed piece looks for it, and the license Microsoft asks to ship. */
+export const WEBVIEW2_FILES = [
+  ['lib/net462/Microsoft.Web.WebView2.Core.dll', 'Microsoft.Web.WebView2.Core.dll'],
+  ['lib/net462/Microsoft.Web.WebView2.WinForms.dll', 'Microsoft.Web.WebView2.WinForms.dll'],
+  ['runtimes/win-x64/native/WebView2Loader.dll', 'runtimes/win-x64/native/WebView2Loader.dll'],
+  ['LICENSE.txt', 'WEBVIEW2-LICENSE.txt'],
+];
+
+/** The WebView2 package, after its SHA-256 matched the fixed one, with the files above unpacked into a folder of their own. */
+export async function fetchWebView2(dir) {
+  const file = join(dir, 'webview2-' + WEBVIEW2_VERSION + '.nupkg');
+  if (!existsSync(file)) {
+    mkdirSync(dir, { recursive: true });
+    const res = await fetch(WEBVIEW2_URL);
+    if (!res.ok) throw new Error('nuget.org answered ' + res.status + ' for the WebView2 package');
+    writeFileSync(file, Buffer.from(await res.arrayBuffer()));
+  }
+  const sha = createHash('sha256').update(readFileSync(file)).digest('hex');
+  if (sha !== WEBVIEW2_SHA256) throw new Error('the WebView2 package has SHA-256 ' + sha + ', not the fixed ' + WEBVIEW2_SHA256);
+  const out = join(dir, 'unpacked-webview2');
+  rmSync(out, { recursive: true, force: true });
+  mkdirSync(out, { recursive: true });
+  sh('tar', ['-xf', file, '-C', out, ...WEBVIEW2_FILES.map(([inside]) => inside)]);
+  return { dir: out, core: join(out, WEBVIEW2_FILES[0][0]), winforms: join(out, WEBVIEW2_FILES[1][0]) };
+}
+
+/** Puts the WebView2 files beside the program (a folder with Files Direct.exe in it). */
+export function placeWebView2(webview, into) {
+  for (const [inside, name] of WEBVIEW2_FILES) {
+    mkdirSync(join(into, ...name.split('/').slice(0, -1)), { recursive: true });
+    cpSync(join(webview.dir, inside), join(into, ...name.split('/')));
+  }
+}
+
 const frameworkCsc = () => join(process.env.windir ?? 'C:\\Windows', 'Microsoft.NET', 'Framework64', 'v4.0.30319', 'csc.exe');
 
 /** Compiles the tray and launcher program with the compiler that is in every Windows (C# 5, .NET Framework 4). */
-export function compileLauncher(out, work, version, naive = false, manifest = null) {
+export function compileLauncher(out, work, version, naive = false, manifest = null, webview = null) {
+  if (!webview) throw new Error('the launcher shows the app\'s window with WebView2: its files are needed to build it (fetchWebView2)');
   mkdirSync(work, { recursive: true });
   const ico = join(work, 'app.ico');
   writeFileSync(ico, iconIco());
   const v = version.split('.').concat(['0']).slice(0, 4).join('.');
   const info = join(work, 'AssemblyInfo.cs');
   writeFileSync(info, 'using System.Reflection;\n[assembly: AssemblyTitle("Files Direct")]\n[assembly: AssemblyProduct("Files Direct")]\n[assembly: AssemblyVersion("' + v + '")]\n[assembly: AssemblyFileVersion("' + v + '")]\n[assembly: AssemblyInformationalVersion("' + version + '")]\n');
-  const args = ['/nologo', '/target:winexe', '/platform:x64', '/optimize+', '/out:' + out, '/win32icon:' + ico, '/r:System.dll', '/r:System.Windows.Forms.dll', '/r:System.Drawing.dll', '/r:System.Web.Extensions.dll', ...(naive ? ['/define:FD_NAIVE'] : []), ...(manifest ? ['/win32manifest:' + manifest] : []), join('app', 'win', 'FilesDirect.cs'), info];
+  const args = ['/nologo', '/target:winexe', '/platform:x64', '/optimize+', '/out:' + out, '/win32icon:' + ico, '/r:System.dll', '/r:System.Windows.Forms.dll', '/r:System.Drawing.dll', '/r:System.Web.Extensions.dll', '/r:' + webview.core, '/r:' + webview.winforms, ...(naive ? ['/define:FD_NAIVE'] : []), ...(manifest ? ['/win32manifest:' + manifest] : []), join('app', 'win', 'FilesDirect.cs'), info];
   console.log('csc ' + args.join(' '));
   sh(frameworkCsc(), args);
   return ico;
@@ -320,10 +367,13 @@ export async function main(target, mode) {
     }
   } else if (t.os === 'win32') {
     const launcher = join(stage, 'Files Direct.exe');
-    const ico = compileLauncher(launcher, work, info.version);
+    const webview = await fetchWebView2(join(cache, 'webview2'));
+    const ico = compileLauncher(launcher, work, info.version, false, null, webview);
+    placeWebView2(webview, stage); // the installer packs the whole folder: the window's files ship with the program
     mkdirSync(join(outDir, 'launcher', 'real'), { recursive: true });
     cpSync(launcher, join(outDir, 'launcher', 'real', 'Files Direct.exe'));
-    if (!updateOnly) compileLauncherNaive(work, info.version, outDir);
+    placeWebView2(webview, join(outDir, 'launcher', 'real'));
+    if (!updateOnly) compileLauncherNaive(work, info.version, outDir, webview);
     note('Files Direct.exe (tray and launcher)', statSync(launcher).size);
     note('installed folder', sizeOf(stage));
     buildWinInstaller(stage, work, outDir, info.version, ico);
@@ -333,10 +383,10 @@ export async function main(target, mode) {
 }
 
 /** The careless launcher, for the check that shows a hostile name breaks it. Never part of what is shipped. */
-function compileLauncherNaive(work, version, outDir) {
+function compileLauncherNaive(work, version, outDir, webview) {
   const dir = join(outDir, 'launcher', 'naive');
   mkdirSync(dir, { recursive: true });
-  compileLauncher(join(dir, 'Files Direct.exe'), join(work, 'naive'), version, true);
+  compileLauncher(join(dir, 'Files Direct.exe'), join(work, 'naive'), version, true, null, webview);
 }
 
 if (typeof process !== 'undefined' && process.argv?.[1] && import.meta.url === new URL('file://' + (process.platform === 'win32' ? '/' : '') + process.argv[1].replace(/\\/g, '/')).href) {

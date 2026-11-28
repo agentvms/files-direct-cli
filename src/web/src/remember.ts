@@ -10,17 +10,23 @@ import { type Keeper, type SavedDevice, addDevice, readStore, setSelfName } from
 /** Why a try ended without a saved device. */
 export type RememberProblem = 'declined' | 'failed' | 'full' | 'busy' | 'timed-out' | 'not-saved';
 
+/** What an idle screen says first: this side cancelled, or the other side stopped asking. Either way nothing was saved. */
+export type RememberSaid = 'cancelled' | 'withdrawn';
+
 /** What a person sees; remember-ui.ts draws it, a test records it. */
 export interface RememberView {
-  /** Nothing is going on: a button that starts it, or nothing at all when it cannot be offered now. */
-  idle(offer: (() => void) | null): void;
+  /** Nothing is going on: a button that starts it, or nothing at all when it cannot be offered now. `said` is what ended just before: a screen tells the person that nothing was saved. */
+  idle(offer: (() => void) | null, said?: RememberSaid): void;
   /**
    * This side asks. The screen is about the OTHER device: `start` is the name that device gave itself, and the person may change it into a nickname that stays on this device.
    * `own` is only for a program that says this device's own name with its yes (`--name`); a screen never passes it.
    */
   form(start: string, ok: (nickname: string, own?: string) => void, cancel: () => void): void;
-  /** The other side was asked and has not answered. */
-  waiting(): void;
+  /**
+   * 'asking': the other side was asked and has not answered; `cancel` stops it (the other side's question goes away). 'saving': this side said yes and the pair is being made, which takes
+   * seconds and has no cancel.
+   */
+  waiting(kind: 'asking' | 'saving', cancel?: () => void): void;
   /** The other side asks: the name it gave itself, the nickname to keep it by (starts as that name), then Remember or No thanks. */
   asked(theirName: string, start: string, ok: (nickname: string, own?: string) => void, no: () => void): void;
   saved(theirName: string): void;
@@ -57,8 +63,8 @@ export class RememberFlow {
   private mode: Mode = 'idle';
   private available = false;
   private theirs = '';
-  /** What this person chose to call the other device ('' = keep the name it gave itself). Never this device's own name. */
-  private nick = '';
+  /** What the person left in the field for the other device. It is kept as the nickname unless it is the very name the device gave itself. Never this device's own name. */
+  private typed = '';
   private made: { id: string; token: string; secret: string } | null = null;
   private stop: (() => void) | null = null;
   private ended = false;
@@ -76,8 +82,8 @@ export class RememberFlow {
     if (this.mode === 'idle') this.showIdle();
   }
 
-  private showIdle(): void {
-    this.d.view.idle(this.available ? () => this.begin() : null);
+  private showIdle(said?: RememberSaid): void {
+    this.d.view.idle(this.available ? () => this.begin() : null, said);
   }
 
   private timer(ms: number, fn: () => void): void {
@@ -97,7 +103,7 @@ export class RememberFlow {
     this.clear();
     this.mode = 'idle';
     this.made = null;
-    this.nick = '';
+    this.typed = '';
   }
 
   private end(why: RememberProblem): void {
@@ -118,15 +124,13 @@ export class RememberFlow {
     return given || readStore(this.d.kv).self || this.d.guess();
   }
 
-  /** What was typed for the other device, as a nickname: nothing when the field was left as it started (the device keeps following the name it gives itself). */
-  private asNick(typed: string, start: string): string {
-    const nick = cleanDeviceName(typed);
-    return nick && nick !== start ? nick : '';
-  }
-
-  /** A saved device as this browser keeps it: shown by the nickname when the person chose another name than the one the device gave itself. */
+  /**
+   * A saved device as this browser keeps it: shown by the name the person accepted or typed, which is a nickname whenever it is not the very name the device gave itself (files-direct-58,
+   * fd-e3z: a plain word for its kind that was accepted, "Linux computer", used to be replaced by the name the device then said, "Chrome on Linux"). Only a name the person left as the
+   * device's own keeps following what the device calls itself.
+   */
   private device(id: string, secret: string, side: 'a' | 'b'): SavedDevice {
-    const nick = this.nick && this.nick !== this.theirs ? this.nick : '';
+    const nick = this.typed && this.typed !== this.theirs ? this.typed : '';
     return { id, name: nick || this.theirs, secret, side, made: Date.now(), ...(nick ? { nick } : {}) };
   }
 
@@ -139,10 +143,11 @@ export class RememberFlow {
     this.d.view.form(
       start,
       (name, own) => {
+        if (this.mode !== 'form' || this.ended) return;
         const mine = this.own(own);
-        this.nick = this.asNick(name, start);
+        this.typed = cleanDeviceName(name);
         this.mode = 'waiting';
-        this.d.view.waiting();
+        this.d.view.waiting('asking', () => this.stopAsking());
         this.d.send({ t: 'pair', p: 'offer', name: mine });
         this.timer(ASK_WAIT_MS, () => {
           this.d.send({ t: 'pair', p: 'cancel', why: 'timed-out' });
@@ -151,9 +156,17 @@ export class RememberFlow {
       },
       () => {
         this.reset();
-        this.showIdle();
+        this.showIdle('cancelled');
       },
     );
+  }
+
+  /** The person pressed Cancel while the other device is being asked: the other side is told, and nothing was made. */
+  private stopAsking(): void {
+    if (this.mode !== 'waiting' || this.ended) return;
+    this.d.send({ t: 'pair', p: 'cancel', why: 'cancelled' });
+    this.reset();
+    this.showIdle('cancelled');
   }
 
   /** A frame from the other page. Anything out of order, or not shaped right, is ignored. */
@@ -172,6 +185,11 @@ export class RememberFlow {
       case 'done':
         return this.onDone();
       case 'cancel':
+        if (m.why === 'cancelled' && (this.mode === 'asked' || this.mode === 'accepted')) {
+          // the other side stopped asking: the question goes away, and the screen says nothing was saved
+          this.reset();
+          return this.showIdle('withdrawn');
+        }
         if (this.mode !== 'idle') this.end(m.why === 'full' ? 'full' : m.why === 'busy' ? 'busy' : m.why === 'timed-out' ? 'timed-out' : 'failed');
         return;
       default:
@@ -197,10 +215,11 @@ export class RememberFlow {
       this.theirs,
       this.theirs,
       (name, own) => {
+        if (this.mode !== 'asked' || this.ended) return;
         const mine = this.own(own);
-        this.nick = this.asNick(name, this.theirs);
+        this.typed = cleanDeviceName(name);
         this.mode = 'accepted';
-        this.d.view.waiting();
+        this.d.view.waiting('saving');
         this.d.send({ t: 'pair', p: 'accept', name: mine });
         this.timer(SECRET_WAIT_MS, () => {
           this.d.send({ t: 'pair', p: 'cancel', why: 'timed-out' });
@@ -224,6 +243,7 @@ export class RememberFlow {
     }
     this.clear();
     this.mode = 'registering';
+    this.d.view.waiting('saving'); // the same screen the other side has: Cancel is gone, since it could no longer stop anything
     const secret = generatePairSecret();
     const id = await pairIdFromSecret(secret);
     const token = await forgetTokenFromSecret(secret);

@@ -41,6 +41,11 @@ export interface PresenceHandlers {
   invite(device: SavedDevice, nonce: string): void;
   /** The pair is gone on the other side (or ran out): the page drops the device. */
   forgotten(device: SavedDevice): void;
+  /**
+   * What to do when a newer page of the same browser took this socket over (fd-e3z). A page says 'wait': it asks again only when it is looked at (`wake`), so two pages never take it from each
+   * other in turn. A program with no such moment (the default) tries again after a minute.
+   */
+  whenReplaced?: 'wait' | 'retry';
 }
 
 export interface Presence {
@@ -49,17 +54,23 @@ export interface Presence {
   here(id: string): boolean;
   /** Hands a nonce to the device, if it is here. False when it is not (nothing was sent). */
   invite(id: string, nonce: string): boolean;
+  /** The page is looked at again: a socket that was taken over by another page, or is waiting to try again, is asked for now. */
+  wake(): void;
   close(): void;
 }
 
 /** After a socket that did not open or was lost: how long before trying again. The last value repeats. */
 export const PRESENCE_RETRY_MS = [2000, 5000, 15_000, 30_000, 60_000];
+/** After a newer page took the socket over, for a program that does not wait to be looked at. */
+export const PRESENCE_REPLACED_RETRY_MS = 60_000;
 
 interface Link {
   dev: SavedDevice;
   ws: WebSocket | null;
   here: boolean;
   tries: number;
+  /** A newer page of this browser took the socket over (it was told so): nothing asks again by itself. */
+  replaced: boolean;
   timer: ReturnType<typeof setTimeout> | null;
 }
 
@@ -114,6 +125,7 @@ export function openPresence(h: PresenceHandlers, where?: SignalWhere): Presence
   const connect = (l: Link) => {
     if (closed || links.get(l.dev.id) !== l) return;
     let opened = false;
+    l.replaced = false;
     // a page cannot add headers to its socket; the program can (the second argument is the program's own WebSocket), as for the room's socket in signal.ts
     const ws = where?.headers ? new (WebSocket as unknown as new (url: string, o: unknown) => WebSocket)(address(l.dev, 'ws'), { headers: where.headers }) : new WebSocket(address(l.dev, 'ws'));
     l.ws = ws;
@@ -136,6 +148,7 @@ export function openPresence(h: PresenceHandlers, where?: SignalWhere): Presence
         }
       } else if (m.t === 'invite' && typeof m.nonce === 'string' && PAIR_NONCE_PATTERN.test(m.nonce)) h.invite(l.dev, m.nonce);
       else if (m.t === 'forgotten') drop(l, true);
+      else if (m.t === 'replaced') l.replaced = true; // its close follows at once (see `end`)
     });
     let ended = false;
     const end = () => {
@@ -147,6 +160,7 @@ export function openPresence(h: PresenceHandlers, where?: SignalWhere): Presence
         h.changed();
       }
       if (closed || links.get(l.dev.id) !== l) return;
+      if (l.replaced) return h.whenReplaced === 'wait' ? undefined : later(l, PRESENCE_REPLACED_RETRY_MS);
       if (opened) return later(l, 1000); // it was up and dropped: the next try is soon, and a pair that was forgotten meanwhile answers 404 on it
       void askWhy(l);
     };
@@ -167,7 +181,7 @@ export function openPresence(h: PresenceHandlers, where?: SignalWhere): Presence
           have.dev = dev;
           continue;
         }
-        const l: Link = { dev, ws: null, here: false, tries: 0, timer: null };
+        const l: Link = { dev, ws: null, here: false, tries: 0, replaced: false, timer: null };
         links.set(dev.id, l);
         connect(l);
       }
@@ -178,6 +192,16 @@ export function openPresence(h: PresenceHandlers, where?: SignalWhere): Presence
       if (!l?.here || l.ws?.readyState !== WebSocket.OPEN) return false;
       l.ws.send(JSON.stringify({ t: 'invite', nonce }));
       return true;
+    },
+    wake() {
+      if (closed) return;
+      for (const l of links.values()) {
+        if (l.ws) continue;
+        if (l.timer) clearTimeout(l.timer);
+        l.timer = null;
+        l.replaced = false;
+        connect(l);
+      }
     },
     close() {
       closed = true;
