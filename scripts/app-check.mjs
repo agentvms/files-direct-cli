@@ -650,6 +650,12 @@ function putStubIn(dir, outside) {
 
 /** The windows of the app that are 480 wide and tall (the size of the Files Direct window), seen from outside the app. null when this machine would not say. */
 const MAC_WINDOWS = "ObjC.import('CoreGraphics'); const all = ObjC.deepUnwrap(ObjC.castRefToObject($.CGWindowListCopyWindowInfo($.kCGWindowListOptionAll, $.kCGNullWindowID))); JSON.stringify(all.filter(function (w) { return /Files ?Direct/.test(w.kCGWindowOwnerName || '') && w.kCGWindowBounds && w.kCGWindowBounds.Width === 480 && w.kCGWindowBounds.Height >= 760; }).map(function (w) { return { w: w.kCGWindowBounds.Width, h: w.kCGWindowBounds.Height, onscreen: Boolean(w.kCGWindowIsOnscreen) }; }))";
+/** Every window of the app and the screens' sizes, as the machine says them (what to read when the list above is empty or odd: the screen of a runner can be small, and a window is made to fit its screen). */
+const MAC_ALL = "ObjC.import('CoreGraphics'); ObjC.import('AppKit'); const all = ObjC.deepUnwrap(ObjC.castRefToObject($.CGWindowListCopyWindowInfo($.kCGWindowListOptionAll, $.kCGNullWindowID))); const screens = ObjC.deepUnwrap($.NSScreen.screens).map(function (s) { return { frame: [s.frame.size.width, s.frame.size.height], visible: [s.visibleFrame.size.width, s.visibleFrame.size.height] }; }); JSON.stringify({ screens: screens, windows: all.filter(function (w) { return /Files ?Direct/.test(w.kCGWindowOwnerName || ''); }).map(function (w) { return { owner: w.kCGWindowOwnerName, name: w.kCGWindowName, layer: w.kCGWindowLayer, w: w.kCGWindowBounds && w.kCGWindowBounds.Width, h: w.kCGWindowBounds && w.kCGWindowBounds.Height, onscreen: Boolean(w.kCGWindowIsOnscreen) }; }) })";
+const macSeen = () => {
+  const r = run('osascript', ['-l', 'JavaScript', '-e', MAC_ALL]);
+  return r.status === 0 ? r.stdout.trim() : 'not readable: ' + (r.stderr || '').trim().slice(0, 200);
+};
 const macWindows = () => {
   try {
     return JSON.parse(run('osascript', ['-l', 'JavaScript', '-e', MAC_WINDOWS]).stdout.trim());
@@ -696,6 +702,7 @@ async function macWindow() {
   const wins = await until('the window', () => (macWindows()?.length ? macWindows() : null), 20_000);
   if (wins === null && macWindows() === null) note('the window list could not be read on this machine: the window itself is NOT seen here');
   else ok(wins?.length === 1, 'one window of the app, 480 wide, is on the screen list: ' + JSON.stringify(wins));
+  note('every window of the app and the screens, as this machine says them:\n' + macSeen());
   run('screencapture', ['-x', join(SHOTS, 'mac-app-window.png')]); // best effort: a runner may have no screen
 
   // the page sends the window to the outside address: the system's browser gets it and the window stays on the page
