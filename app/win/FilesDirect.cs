@@ -658,6 +658,7 @@ namespace FilesDirect
             form.FormClosed += delegate
             {
                 forms.Remove(address);
+                if (user && !exited && !form.BrowserFallback) StopSoon(); // a window that went without being asked leaves no engine behind; one that handed its page to the browser leaves it, the browser is showing it
                 cleaning++; // the window's profile is still to be deleted: the run is not over until it is
                 if (forms.Count == 0) Idle();
             };
@@ -730,6 +731,9 @@ namespace FilesDirect
         bool finished;
         bool closing;
 
+        /// <summary>The window could not start and its page went to the browser: its closing is no end of the run, the engine goes on serving the page.</summary>
+        public bool BrowserFallback;
+
         /// <summary>The person closed the window: what runs behind it is to end.</summary>
         public event EventHandler PersonClosed;
 
@@ -769,6 +773,7 @@ namespace FilesDirect
                 // WebView2 would not start here after all: the page is shown in the browser, as it was before this window existed
                 Shell.OpenOutside(address);
                 finished = true;
+                BrowserFallback = true;
                 Close();
             }
         }
@@ -817,7 +822,8 @@ namespace FilesDirect
 
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
-            if (!finished && e.CloseReason == CloseReason.UserClosing)
+            // any way a window is closed from outside (the red button, Alt+F4, the taskbar, a program that posts a close, an installer that closes the app) asks the page first; only the end of Windows or of this program does not
+            if (!finished && e.CloseReason != CloseReason.WindowsShutDown && e.CloseReason != CloseReason.ApplicationExitCall)
             {
                 e.Cancel = true;
                 AskToClose();
